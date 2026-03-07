@@ -65,8 +65,8 @@ async def send_message(request: ChatRequest, db: AsyncSession = Depends(get_db))
 
 
 @router.post("/stream")
-async def stream_message(request: ChatRequest):
-    """Stream AI response for a message."""
+async def stream_message(request: ChatRequest, db: AsyncSession = Depends(get_db)):
+    """Stream AI response for a message with optional RAG context."""
     gemini = get_gemini_service()
     
     # Convert history to dict format
@@ -74,8 +74,13 @@ async def stream_message(request: ChatRequest):
     if request.history:
         history = [{"role": msg.role, "content": msg.content} for msg in request.history]
     
+    # Get RAG context if repository is specified
+    context = request.context
+    if request.repository_id and not context:
+        context = await get_rag_context(db, request.message, request.repository_id)
+    
     async def generate() -> AsyncGenerator[str, None]:
-        async for chunk in gemini.stream_response(request.message, history):
+        async for chunk in gemini.stream_response(request.message, history, context):
             yield f"data: {chunk}\n\n"
         yield "data: [DONE]\n\n"
     

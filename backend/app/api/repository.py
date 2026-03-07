@@ -1,18 +1,16 @@
 """Repository API endpoints."""
-import os
-import shutil
-import tempfile
+import logging
 from typing import Optional
 from datetime import datetime
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, status, Query, BackgroundTasks
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete as sql_delete
 
 from app.api.deps import DbSession, CurrentUser
-from app.models.file import Repository, File
+from app.models.file import Repository, File, FileChunk
 from app.services.file_service import FileService
 from app.services.rag_service import RAGService
+from app.services.github_service import GitHubService
 from app.schemas.file import (
     RepositoryCreate,
     RepositoryImport,
@@ -27,6 +25,7 @@ from app.schemas.file import (
     FileResponse,
 )
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/repo", tags=["repository"])
 
 
@@ -68,82 +67,90 @@ async def import_github_repository(
     db: DbSession,
     current_user: CurrentUser
 ):
-    """Import a GitHub repository by cloning and indexing files."""
-    import subprocess
-    
-    # Extract repo name from URL
-    url_parts = repo_import.url.rstrip('/').split('/')
-    repo_name = url_parts[-1].replace('.git', '')
-    
+    """Import a GitHub repository using the GitHub REST API."""
+    github = GitHubService()
+
+    # Parse owner/repo from URL
+    try:
+        owner, repo_name = github.parse_github_url(repo_import.url)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+    # Fetch repo info from GitHub for description
+    try:
+        repo_info = await github.get_repo_info(owner, repo_name)
+        description = repo_info.description or f"Imported from {repo_import.url}"
+        branch = repo_import.branch or repo_info.default_branch
+    except Exception as e:
+        logger.warning(f"Could not fetch repo info: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not access GitHub repository. It may be private or invalid. Error: {e}"
+        )
+
     # Create repository record
     new_repo = Repository(
         name=repo_name,
         url=repo_import.url,
-        description=f"Imported from {repo_import.url}",
+        description=description,
         owner_id=current_user.id
     )
-    
+
     db.add(new_repo)
     await db.commit()
     await db.refresh(new_repo)
-    
-    # Clone and index in background
-    async def clone_and_index(repo_id: int, url: str, branch: str, owner_id: int):
+
+    # Fetch and index files in background
+    async def fetch_and_index(repo_id: int, gh_owner: str, gh_repo: str, gh_branch: str, owner_id: int):
         from app.core.database import async_session_maker
-        
-        clone_dir = Path(tempfile.mkdtemp())
+
         try:
-            # Clone repository
-            subprocess.run(
-                ["git", "clone", "--depth", "1", "--branch", branch, url, str(clone_dir)],
-                check=True,
-                capture_output=True,
-                timeout=120
-            )
-            
+            gh = GitHubService()
+
+            # 1. Get the full file tree (single API call)
+            file_list = await gh.get_repo_tree(gh_owner, gh_repo, gh_branch)
+            logger.info(f"Fetching {len(file_list)} files from {gh_owner}/{gh_repo}")
+
+            # 2. Fetch file contents in batches
+            file_paths = [f.path for f in file_list]
+            contents = await gh.get_files_batch(gh_owner, gh_repo, file_paths, gh_branch, batch_size=5)
+
+            # 3. Store and index each file
             async with async_session_maker() as session:
                 file_service = FileService(session)
                 rag_service = RAGService(session)
-                
-                # Walk directory and upload files
-                code_extensions = {'.py', '.js', '.ts', '.tsx', '.jsx', '.java', '.cpp', '.c', '.h', 
-                                   '.go', '.rs', '.rb', '.php', '.swift', '.kt', '.scala', '.cs',
-                                   '.html', '.css', '.json', '.yaml', '.yml', '.md', '.sql', '.sh'}
-                
-                for file_path in clone_dir.rglob('*'):
-                    if file_path.is_file() and file_path.suffix.lower() in code_extensions:
-                        # Skip hidden files and common ignore patterns
-                        if any(part.startswith('.') for part in file_path.parts):
-                            continue
-                        if any(part in ['node_modules', 'venv', '__pycache__', 'dist', 'build'] for part in file_path.parts):
-                            continue
-                        
-                        try:
-                            content = file_path.read_bytes()
-                            if len(content) > 1024 * 1024:  # Skip files > 1MB
-                                continue
-                            
-                            relative_path = str(file_path.relative_to(clone_dir))
-                            stored_file = await file_service.upload_file(
-                                file_content=content,
-                                filename=file_path.name,
-                                owner_id=owner_id,
-                                repository_id=repo_id,
-                                original_path=relative_path
-                            )
-                            
-                            # Index for RAG
-                            if stored_file.language:
-                                try:
-                                    await rag_service.index_file(
-                                        stored_file, 
-                                        content.decode('utf-8', errors='ignore')
-                                    )
-                                except Exception:
-                                    pass
-                        except Exception as e:
-                            print(f"Failed to process {file_path}: {e}")
-                
+                indexed_count = 0
+
+                for gh_file in file_list:
+                    content = contents.get(gh_file.path)
+                    if content is None:
+                        continue
+
+                    try:
+                        stored_file = await file_service.upload_file(
+                            file_content=content,
+                            filename=gh_file.name,
+                            owner_id=owner_id,
+                            repository_id=repo_id,
+                            original_path=gh_file.path
+                        )
+
+                        # Index for RAG if it's a code file
+                        if stored_file.language:
+                            try:
+                                await rag_service.index_file(
+                                    stored_file,
+                                    content.decode('utf-8', errors='ignore')
+                                )
+                                indexed_count += 1
+                            except Exception as e:
+                                logger.warning(f"RAG indexing failed for {gh_file.path}: {e}")
+                    except Exception as e:
+                        logger.warning(f"Failed to process {gh_file.path}: {e}")
+
                 # Update indexed timestamp
                 result = await session.execute(
                     select(Repository).where(Repository.id == repo_id)
@@ -152,23 +159,22 @@ async def import_github_repository(
                 if repo:
                     repo.indexed_at = datetime.now()
                     await session.commit()
-                    
-        except subprocess.TimeoutExpired:
-            print(f"Clone timeout for {url}")
+
+                logger.info(f"Import complete: {indexed_count} files indexed for {gh_owner}/{gh_repo}")
+
         except Exception as e:
-            print(f"Import failed: {e}")
-        finally:
-            shutil.rmtree(clone_dir, ignore_errors=True)
-    
+            logger.error(f"Import failed for {gh_owner}/{gh_repo}: {e}")
+
     # Start background task
     background_tasks.add_task(
-        clone_and_index,
+        fetch_and_index,
         new_repo.id,
-        repo_import.url,
-        repo_import.branch,
+        owner,
+        repo_name,
+        branch,
         current_user.id
     )
-    
+
     response = RepositoryResponse.model_validate(new_repo)
     response.file_count = 0
     return response
@@ -265,6 +271,61 @@ async def list_repository_files(
     )
 
 
+@router.get("/{repo_id}/file")
+async def get_repository_file(
+    repo_id: int,
+    file_path: str,
+    db: DbSession,
+    current_user: CurrentUser
+):
+    """Get single file content from a repository by path."""
+    # Verify repo ownership
+    result = await db.execute(
+        select(Repository).where(
+            Repository.id == repo_id,
+            Repository.owner_id == current_user.id
+        )
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Repository not found"
+        )
+    
+    # Get file by path
+    file_result = await db.execute(
+        select(File).where(
+            File.repository_id == repo_id,
+            File.path == file_path
+        )
+    )
+    file = file_result.scalar_one_or_none()
+    
+    if not file:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="File not found in repository"
+        )
+        
+    file_service = FileService(db)
+    content = await file_service.get_file_content(file)
+    
+    if content is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="File content not found on disk"
+        )
+        
+    try:
+        text_content = content.decode('utf-8', errors='replace')
+        return {"content": text_content}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not decode file content: {e}"
+        )
+
+
 @router.post("/{repo_id}/search", response_model=SearchResult)
 async def search_repository(
     repo_id: int,
@@ -345,6 +406,81 @@ async def get_repository_context(
     )
     
     return context
+
+
+@router.post("/{repo_id}/reindex")
+async def reindex_repository(
+    repo_id: int,
+    background_tasks: BackgroundTasks,
+    db: DbSession,
+    current_user: CurrentUser
+):
+    """Re-index all files in a repository for RAG."""
+    # Verify repo ownership
+    result = await db.execute(
+        select(Repository).where(
+            Repository.id == repo_id,
+            Repository.owner_id == current_user.id
+        )
+    )
+    repo = result.scalar_one_or_none()
+    if not repo:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Repository not found"
+        )
+
+    async def do_reindex(repo_id: int, owner_id: int):
+        from app.core.database import async_session_maker
+
+        async with async_session_maker() as session:
+            try:
+                # 1. Get all files for this repo
+                file_result = await session.execute(
+                    select(File).where(File.repository_id == repo_id)
+                )
+                files = list(file_result.scalars().all())
+
+                # 2. Delete existing chunks for these files
+                file_ids = [f.id for f in files]
+                if file_ids:
+                    await session.execute(
+                        sql_delete(FileChunk).where(FileChunk.file_id.in_(file_ids))
+                    )
+                    await session.commit()
+
+                # 3. Re-index each file
+                file_service = FileService(session)
+                rag_service = RAGService(session)
+                indexed_count = 0
+
+                for file in files:
+                    content = await file_service.get_file_content(file)
+                    if content and file.language:
+                        try:
+                            await rag_service.index_file(
+                                file,
+                                content.decode('utf-8', errors='ignore')
+                            )
+                            indexed_count += 1
+                        except Exception as e:
+                            logger.warning(f"Re-index failed for {file.path}: {e}")
+
+                # 4. Update indexed timestamp
+                repo_result = await session.execute(
+                    select(Repository).where(Repository.id == repo_id)
+                )
+                repo = repo_result.scalar_one_or_none()
+                if repo:
+                    repo.indexed_at = datetime.now()
+                    await session.commit()
+
+                logger.info(f"Re-indexed {indexed_count} files for repo {repo_id}")
+            except Exception as e:
+                logger.error(f"Re-index failed for repo {repo_id}: {e}")
+
+    background_tasks.add_task(do_reindex, repo_id, current_user.id)
+    return {"message": "Re-indexing started", "repo_id": repo_id}
 
 
 @router.delete("/{repo_id}", status_code=status.HTTP_204_NO_CONTENT)

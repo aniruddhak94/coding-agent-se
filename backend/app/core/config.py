@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     # Gemini AI
     gemini_api_key: str = "AIzaSyASkkNan6_gAr15Ocy4L7eF9yzY05zq3Wg"
     
+    github_token: str = ""
     # Vector DB
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333

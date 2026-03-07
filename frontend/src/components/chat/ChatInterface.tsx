@@ -35,7 +35,7 @@ export default function ChatInterface() {
     const [isLoading, setIsLoading] = useState(false);
     const [streamingContent, setStreamingContent] = useState("");
     const [sessionId, setSessionId] = useState<string | null>(null);
-    const [useStreaming, setUseStreaming] = useState(true);
+    const useStreaming = false;
     const [repositories, setRepositories] = useState<Repository[]>([]);
     const [selectedRepoId, setSelectedRepoId] = useState<number | null>(null);
     const [uploadedFiles, setUploadedFiles] = useState<{ name: string, status: 'uploading' | 'success' | 'error' }[]>([]);
@@ -143,7 +143,7 @@ export default function ChatInterface() {
             if (useStreaming) {
                 let fullContent = "";
                 await apiClient.streamMessage(
-                    { message: currentInput, session_id: sessionId || undefined, history },
+                    { message: currentInput, session_id: sessionId || undefined, history, repository_id: selectedRepoId || undefined },
                     (chunk) => { fullContent += chunk; setStreamingContent(fullContent); },
                     () => {
                         const aiMessage: Message = { id: (Date.now() + 1).toString(), role: "assistant", content: fullContent, timestamp: new Date() };
@@ -328,10 +328,6 @@ export default function ChatInterface() {
                         </button>
                         <span className="text-xs text-[#5A7268]">ICA may produce inaccurate information.</span>
                     </div>
-                    <label className="flex items-center gap-2 text-xs text-[#8FAEA2] cursor-pointer">
-                        <input type="checkbox" checked={useStreaming} onChange={(e) => setUseStreaming(e.target.checked)} className="rounded bg-[#1A2420] border-[#1F2D28] text-[#2EFF7B] focus:ring-[#2EFF7B]" />
-                        Stream responses
-                    </label>
                 </div>
             </div>
         </div>

@@ -1,3 +1,4 @@
+"""Service for interacting with Google Gemini AI."""
 import os
 from typing import AsyncGenerator, Optional
 from dotenv import load_dotenv
@@ -48,7 +49,7 @@ Format responses using Markdown with proper code blocks."""
         if _api_configured:
             try:
                 self.model = genai.GenerativeModel(
-                    model_name="gemini-2.5-flash",
+                    model_name="gemini-3-flash-preview",
                 )
                 print("Gemini model initialized successfully")
             except Exception as e:
@@ -94,7 +95,7 @@ User: {message}"""
             chat = self.model.start_chat(history=history)
             
             # Generate response
-            response = await chat.send_message_async(full_message if not history else message)
+            response = await chat.send_message_async(full_message)
             return response.text
         except Exception as e:
             return f"I apologize, but I encountered an error: {str(e)}\n\nPlease check if the Gemini API key is configured correctly."
@@ -103,15 +104,27 @@ User: {message}"""
         self,
         message: str,
         chat_history: Optional[list[dict]] = None,
+        context: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
-        """Stream a response from the AI model."""
+        """Stream a response from the AI model with optional RAG context."""
         if self.model is None:
             yield "⚠️ **Gemini API not configured**\n\nTo enable AI responses, please add your Gemini API key to the `.env` file.\n\nGet your key from [Google AI Studio](https://aistudio.google.com/)."
             return
         
         try:
-            # Prepend system prompt for first message
-            full_message = f"{self.SYSTEM_PROMPT}\n\nUser: {message}"
+            # Build the prompt with optional context
+            if context:
+                full_message = f"""{self.SYSTEM_PROMPT}
+
+The following code snippets from the repository are relevant to the user's question:
+
+{context}
+
+Use this context to provide accurate, repository-aware answers. Reference specific file paths and line numbers when helpful.
+
+User: {message}"""
+            else:
+                full_message = f"{self.SYSTEM_PROMPT}\n\nUser: {message}"
             
             # Build conversation history
             history = []
@@ -124,7 +137,7 @@ User: {message}"""
             chat = self.model.start_chat(history=history)
             
             # Generate streaming response
-            response = await chat.send_message_async(full_message if not history else message, stream=True)
+            response = await chat.send_message_async(full_message, stream=True)
             
             async for chunk in response:
                 if chunk.text:

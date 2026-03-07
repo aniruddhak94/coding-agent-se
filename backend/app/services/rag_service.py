@@ -18,7 +18,7 @@ except ImportError:
     QDRANT_AVAILABLE = False
 
 try:
-    import google.generativeai as genai
+    from google import genai
     GENAI_AVAILABLE = True
 except ImportError:
     GENAI_AVAILABLE = False
@@ -26,8 +26,8 @@ except ImportError:
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
-# Embedding dimension for Gemini text-embedding-004
-EMBEDDING_DIMENSION = 768
+# Embedding dimension for Gemini gemini-embedding-001
+EMBEDDING_DIMENSION = 3072
 
 
 @dataclass
@@ -45,7 +45,7 @@ class RAGService:
     def __init__(self, db: AsyncSession):
         self.db = db
         self._qdrant_client: Optional[QdrantClient] = None
-        self._embedding_model = None
+        self._genai_client = None
         self._initialize_clients()
 
     def _initialize_clients(self):
@@ -66,8 +66,8 @@ class RAGService:
         # Initialize Gemini for embeddings
         if GENAI_AVAILABLE and settings.gemini_api_key:
             try:
-                genai.configure(api_key=settings.gemini_api_key)
-                logger.info("Gemini embedding model initialized")
+                self._genai_client = genai.Client(api_key=settings.gemini_api_key)
+                logger.info("Gemini embedding client initialized")
             except Exception as e:
                 logger.warning(f"Gemini initialization failed: {e}")
 
@@ -91,33 +91,33 @@ class RAGService:
 
     async def generate_embedding(self, text: str) -> Optional[List[float]]:
         """Generate embedding for text using Gemini."""
-        if not GENAI_AVAILABLE:
+        if not GENAI_AVAILABLE or not self._genai_client:
             logger.warning("Gemini not available for embeddings")
             return None
         
         try:
-            result = genai.embed_content(
-                model="models/text-embedding-004",
-                content=text,
-                task_type="retrieval_document"
+            result = self._genai_client.models.embed_content(
+                model="models/gemini-embedding-001",
+                contents=text,
+                config={"task_type": "RETRIEVAL_DOCUMENT"},
             )
-            return result['embedding']
+            return result.embeddings[0].values
         except Exception as e:
             logger.error(f"Embedding generation failed: {e}")
             return None
 
     async def generate_query_embedding(self, query: str) -> Optional[List[float]]:
         """Generate embedding for search query."""
-        if not GENAI_AVAILABLE:
+        if not GENAI_AVAILABLE or not self._genai_client:
             return None
         
         try:
-            result = genai.embed_content(
-                model="models/text-embedding-004",
-                content=query,
-                task_type="retrieval_query"
+            result = self._genai_client.models.embed_content(
+                model="models/gemini-embedding-001",
+                contents=query,
+                config={"task_type": "RETRIEVAL_QUERY"},
             )
-            return result['embedding']
+            return result.embeddings[0].values
         except Exception as e:
             logger.error(f"Query embedding generation failed: {e}")
             return None
