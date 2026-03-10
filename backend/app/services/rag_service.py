@@ -55,7 +55,8 @@ class RAGService:
             try:
                 self._qdrant_client = QdrantClient(
                     host=settings.qdrant_host,
-                    port=settings.qdrant_port
+                    port=settings.qdrant_port,
+                    check_compatibility=False
                 )
                 self._ensure_collection()
                 logger.info("Qdrant client initialized successfully")
@@ -220,17 +221,17 @@ class RAGService:
             )
         
         # Search Qdrant
-        results = self._qdrant_client.search(
+        search_result = self._qdrant_client.query_points(
             collection_name=settings.qdrant_collection,
-            query_vector=query_embedding,
+            query=query_embedding,
             limit=top_k,
             query_filter=search_filter
         )
         
         # Fetch chunks from database
         chunks_with_scores = []
-        for result in results:
-            chunk_id = result.payload.get("chunk_id")
+        for point in search_result.points:
+            chunk_id = point.payload.get("chunk_id")
             chunk_result = await self.db.execute(
                 select(FileChunk).where(FileChunk.id == chunk_id)
             )
@@ -240,9 +241,9 @@ class RAGService:
                 chunks_with_scores.append(
                     ChunkWithScore(
                         chunk=chunk,
-                        score=result.score,
-                        file_path=result.payload.get("file_path", ""),
-                        file_name=result.payload.get("file_name", "")
+                        score=point.score,
+                        file_path=point.payload.get("file_path", ""),
+                        file_name=point.payload.get("file_name", "")
                     )
                 )
         
