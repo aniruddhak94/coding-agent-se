@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { usePathname, useRouter } from "next/navigation";
 
 export default function TopNav() {
@@ -10,11 +10,39 @@ export default function TopNav() {
     const [showUserMenu, setShowUserMenu] = useState(false);
     const pathname = usePathname();
     const router = useRouter();
+    const searchRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
         const token = localStorage.getItem("auth_token");
         setIsLoggedIn(!!token);
     }, [pathname]);
+
+    // Global keyboard shortcut (Cmd/Ctrl + K) to focus search
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+                e.preventDefault();
+                searchRef.current?.focus();
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, []);
+
+    const handleSearch = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!searchQuery.trim()) return;
+        const q = searchQuery.trim();
+        // Route to the most relevant page based on current context
+        if (pathname.startsWith('/workspace')) {
+            router.push(`/workspace?search=${encodeURIComponent(q)}`);
+        } else if (pathname.startsWith('/repository')) {
+            router.push(`/repository?search=${encodeURIComponent(q)}`);
+        } else {
+            router.push(`/chat?q=${encodeURIComponent(q)}`);
+        }
+        setSearchQuery('');
+    };
 
     const handleLogout = () => {
         localStorage.removeItem("auth_token");
@@ -41,31 +69,27 @@ export default function TopNav() {
                 </Link>
 
                 {/* Search */}
-                <div className="flex-1 max-w-xl mx-8">
+                <form onSubmit={handleSearch} className="flex-1 max-w-xl mx-8">
                     <div className="relative">
                         <svg className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-[#5A7268]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                         </svg>
                         <input
+                            ref={searchRef}
                             type="text"
-                            placeholder="Search..."
+                            placeholder="Search chats, repos, workspaces..."
                             value={searchQuery}
                             onChange={(e) => setSearchQuery(e.target.value)}
-                            className="w-full bg-[#111917] text-[#E6F1EC] placeholder-[#5A7268] rounded-xl px-4 py-2.5 pl-11 text-sm border border-[#1F2D28] focus:border-[#2EFF7B] focus:outline-none transition-colors"
+                            className="w-full bg-[#111917] text-[#E6F1EC] placeholder-[#5A7268] rounded-xl px-4 py-2.5 pl-11 pr-16 text-sm border border-[#1F2D28] focus:border-[#2EFF7B] focus:outline-none transition-colors"
                         />
                         <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1">
                             <kbd className="px-1.5 py-0.5 text-[10px] text-[#5A7268] bg-[#1A2420] rounded border border-[#1F2D28]">⌘K</kbd>
                         </div>
                     </div>
-                </div>
+                </form>
 
                 {/* Right Actions */}
                 <div className="flex items-center gap-3 flex-shrink-0">
-                    {/* Status */}
-                    <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-[#111917] border border-[#1F2D28] rounded-lg">
-                        <div className="w-2 h-2 bg-[#2EFF7B] rounded-full" />
-                        <span className="text-sm text-[#8FAEA2]">Ready</span>
-                    </div>
 
                     {/* Notifications */}
                     <button className="p-2 text-[#8FAEA2] hover:text-[#E6F1EC] hover:bg-[#111917] rounded-xl transition-colors">

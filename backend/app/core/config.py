@@ -21,10 +21,8 @@ class Settings(BaseSettings):
     # Gemini AI
     gemini_api_key: str = "AIzaSyASkkNan6_gAr15Ocy4L7eF9yzY05zq3Wg"
     
-    # AWS Bedrock
-    aws_access_key_id: str = ""
-    aws_secret_access_key: str = ""
-    aws_region: str = "ap-south-1"
+    # HuggingFace
+    hf_api_token: str = ""
     
     github_token: str = ""
     # Vector DB

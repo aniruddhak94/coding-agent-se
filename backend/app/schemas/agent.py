@@ -13,11 +13,11 @@ class AgentRequest(BaseModel):
     )
     provider: Optional[Literal[
         "auto", "gemini", "qwen",
-        "bedrock-claude-sonnet", "bedrock-claude-haiku",
-        "bedrock-llama", "bedrock-mistral"
+        "hf-qwen-7b", "hf-qwen-35b",
+        "hf-llama-8b", "hf-llama-70b"
     ]] = Field(
         default="auto",
-        description="Model selection: auto, gemini, qwen, or bedrock-* models."
+        description="Model selection: auto, gemini, qwen, or hf-* HuggingFace models."
     )
 
 

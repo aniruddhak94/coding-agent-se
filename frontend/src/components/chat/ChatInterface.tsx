@@ -52,6 +52,24 @@ export default function ChatInterface() {
         return null;
     };
 
+    /** Persist the session to localStorage for the Recent sidebar section */
+    const saveRecentChat = (id: string, title: string) => {
+        if (typeof window === "undefined") return;
+        try {
+            const raw = localStorage.getItem("recent_chats");
+            const existing: { id: string; title: string; timestamp: number }[] = raw ? JSON.parse(raw) : [];
+            // Remove any previous entry for this session
+            const filtered = existing.filter((c) => c.id !== id);
+            // Add to front
+            filtered.unshift({ id, title, timestamp: Date.now() });
+            localStorage.setItem("recent_chats", JSON.stringify(filtered.slice(0, 20)));
+            // Fire a storage event so Sidebar picks it up in the same tab
+            window.dispatchEvent(new StorageEvent("storage", { key: "recent_chats" }));
+        } catch {
+            // ignore
+        }
+    };
+
     useEffect(() => {
         const fetchRepos = async () => {
             const token = getToken();
@@ -179,6 +197,11 @@ export default function ChatInterface() {
                 provider,
             });
             setSessionId(response.session_id);
+            // Save to recent chats on the very first exchange
+            if (!sessionId && response.session_id) {
+                const title = message.slice(0, 40) + (message.length > 40 ? '...' : '');
+                saveRecentChat(response.session_id, title);
+            }
             const aiMessage: Message = { id: (Date.now() + 1).toString(), role: "assistant", content: response.message, timestamp: new Date() };
             setMessages((prev) => [...prev, aiMessage]);
         } catch (error) {

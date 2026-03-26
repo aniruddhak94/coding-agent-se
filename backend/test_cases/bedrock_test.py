@@ -8,7 +8,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Load .env from backend directory
-load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
+load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env", override=True)
 
 AWS_ACCESS_KEY_ID     = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
@@ -27,6 +27,9 @@ MODELS = {
     "bedrock-claude-haiku":  "global.anthropic.claude-haiku-4-5-20251001-v1:0", # Claude Haiku 4.5
     "bedrock-llama":         "apac.meta.llama3-2-90b-instruct-v1:0",            # Llama 3.2 90B (apac)
     "bedrock-mistral":       "mistral.mistral-large-2407-v1:0",                 # bare ID (ap-south-1)
+    "qwen3-vl-235b":         "Qwen3 VL 235B A22B",
+    "qwen3-235b-2507":       "Qwen3 235B A22B 2507",
+    "gpt-oss-120b":          "gpt-oss-120b",
 }
 
 TEST_MESSAGE = "Say 'OK' and nothing else."

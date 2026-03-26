@@ -279,57 +279,47 @@ class AgentService:
     def _get_llm(self, provider: str = "auto", context_size: int = 0):
         """Get the appropriate LangChain LLM based on provider selection."""
         
-        # ── Bedrock models (configured for ap-south-1 / Mumbai) ──────────────────
-        #
-        # Prefix guide:
-        #   global.  → callable from ap-south-1, routes across all commercial regions ✅
-        #   apac.    → only for Anthropic Claude (no Llama/Mistral apac. profiles exist)
-        #   us.      → NOT callable from ap-south-1 ❌
-        #
-        BEDROCK_MODELS = {
-            # Latest Claude models — global. profiles support ap-south-1 as source region
-            "bedrock-claude-sonnet": (
-                "global.anthropic.claude-sonnet-4-6",            # Claude Sonnet 4.6 (newest)
-                "Claude Sonnet 4.6",
+        # ── HuggingFace models (via Inference API) ───────────────────────────────
+        HF_MODELS = {
+            "hf-qwen-7b": (
+                "Qwen/Qwen2.5-7B-Instruct",
+                "Qwen 2.5 7B Instruct",
             ),
-            "bedrock-claude-haiku": (
-                "global.anthropic.claude-haiku-4-5-20251001-v1:0",  # Claude Haiku 4.5 (newest)
-                "Claude Haiku 4.5",
+            "hf-qwen-35b": (
+                "Qwen/Qwen3.5-35B-A3B",
+                "Qwen 3.5 35B",
             ),
-            # ⚠️  Llama 3.3 and Mistral have no apac./global. profiles.
-            #     Using apac. Llama 3.2 90B (largest available) and bare Mistral ID.
-            "bedrock-llama": (
-                "apac.meta.llama3-2-90b-instruct-v1:0",  # largest apac. Llama available
-                "Llama 3.2 90B",
+            "hf-llama-8b": (
+                "meta-llama/Llama-3.1-8B-Instruct",
+                "Llama 3.1 8B Instruct",
             ),
-            "bedrock-mistral": (
-                "mistral.mistral-large-2407-v1:0",        # bare ID — must be enabled in ap-south-1
-                "Mistral Large 2407",
+            "hf-llama-70b": (
+                "meta-llama/Llama-3.1-70B-Instruct",
+                "Llama 3.1 70B Instruct",
             ),
         }
         
-        if provider in BEDROCK_MODELS:
-            model_id, display_name = BEDROCK_MODELS[provider]
+        if provider in HF_MODELS:
+            model_id, display_name = HF_MODELS[provider]
             try:
-                from langchain_aws import ChatBedrockConverse
+                from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
                 from app.core.config import get_settings
                 settings = get_settings()
                 
-                logger.info(f"Agent using {display_name} via Bedrock (context ~{context_size} tokens)")
-                return ChatBedrockConverse(
-                    model=model_id,
-                    region_name=settings.aws_region,
-                    credentials_profile_name=None,  # Use explicit keys
-                    aws_access_key_id=settings.aws_access_key_id,
-                    aws_secret_access_key=settings.aws_secret_access_key,
-                    temperature=0,
-                    max_tokens=8192,
-                ), provider
+                logger.info(f"Agent using {display_name} via HuggingFace (context ~{context_size} tokens)")
+                llm = HuggingFaceEndpoint(
+                    repo_id=model_id,
+                    huggingfacehub_api_token=settings.hf_api_token,
+                    temperature=0.1,
+                    max_new_tokens=8192,
+                    task="text-generation",
+                )
+                return ChatHuggingFace(llm=llm), provider
             except Exception as e:
-                logger.error(f"Bedrock {display_name} failed: {e}")
-                raise RuntimeError(f"Bedrock {display_name} unavailable: {e}")
+                logger.error(f"HuggingFace {display_name} failed: {e}")
+                raise RuntimeError(f"HuggingFace {display_name} unavailable: {e}")
         
-        # ── Qwen (Ollama) ──
+        # ── Qwen (Ollama — local) ──
         use_qwen = (
             provider == "qwen" or
             (provider == "auto" and context_size > GEMINI_TOKEN_THRESHOLD)
@@ -379,17 +369,31 @@ class AgentService:
 
         # Model routing
         context_size = self._estimate_tokens(prompt)
-        llm, model_name = self._get_llm(provider, context_size)
-
-        # Bind tools to model
-        model_with_tools = llm.bind_tools(tools)
+        
+        try:
+            llm, model_name = self._get_llm(provider, context_size)
+            
+            # Bind tools to model
+            model_with_tools = llm.bind_tools(tools)
+        except Exception as e:
+            logger.error(f"Failed to initialize model or bind tools: {e}", exc_info=True)
+            return AgentResponse(
+                explanation=f"Agent setup error: {str(e)}",
+                actions=[],
+                model_used=provider,
+                context_tokens_approx=context_size,
+            )
 
         # Build graph
         tool_node = ToolNode(tools)
         iteration_count = 0
+        nudge_count = 0
+        MAX_NUDGES = 3  # Max times we force the agent to keep exploring
+        tools_used: set[str] = set()  # Track which tools the agent has called
+        EXPLORATION_TOOLS = {"list_files", "read_file", "read_file_lines", "search_code", "find_files"}
 
         async def call_model(state: AgentState):
-            nonlocal iteration_count
+            nonlocal iteration_count, nudge_count
             iteration_count += 1
             
             # Safety: force end if too many iterations
@@ -403,16 +407,66 @@ class AgentService:
             if response.content:
                 response.content = _clean_think_tags(response.content)
             
+            # Track tool calls
+            if response.tool_calls:
+                for tc in response.tool_calls:
+                    tools_used.add(tc["name"])
+            
             tc = len(response.tool_calls) if response.tool_calls else 0
-            logger.info(f"Agent step {iteration_count}: content={bool(response.content)}, tool_calls={tc}")
+            logger.info(f"Agent step {iteration_count}: content={bool(response.content)}, tool_calls={tc}, tools_used={tools_used}")
+            
+            # ── Nudge logic: if the agent tries to conclude without exploring ──
             if response.content and not response.tool_calls:
+                has_explored = bool(tools_used & EXPLORATION_TOOLS)
+                content_lower = response.content.lower()
+                
+                # Detect premature conclusions
+                is_premature = (
+                    not has_explored and
+                    nudge_count < MAX_NUDGES and
+                    iteration_count < self.MAX_ITERATIONS - 2
+                )
+                # Also detect "file not found" claims without searching
+                claims_not_found = (
+                    ("does not exist" in content_lower or
+                     "not found" in content_lower or
+                     "couldn't find" in content_lower or
+                     "could not find" in content_lower or
+                     "no such file" in content_lower) and
+                    "search_code" not in tools_used and
+                    "find_files" not in tools_used and
+                    "list_files" not in tools_used and
+                    nudge_count < MAX_NUDGES
+                )
+                
+                if is_premature or claims_not_found:
+                    nudge_count += 1
+                    logger.info(f"Nudging agent (nudge {nudge_count}/{MAX_NUDGES}): has_explored={has_explored}, claims_not_found={claims_not_found}")
+                    
+                    nudge_msg = (
+                        "STOP — you have NOT explored the workspace yet. "
+                        "You MUST call `list_files('.')` first to see the project structure, "
+                        "then use `search_code` or `find_files` to locate the relevant file. "
+                        "Do NOT claim a file doesn't exist without searching for it. "
+                        "Explore the workspace now."
+                    )
+                    
+                    # Return the agent's response + a nudge to keep going
+                    return {"messages": [
+                        response,
+                        HumanMessage(content=nudge_msg),
+                    ]}
+                
                 logger.info(f"Agent final answer: {response.content[:200]}")
             
             return {"messages": [response]}
 
         def should_continue(state: AgentState):
             last_message = state["messages"][-1]
-            if last_message.tool_calls:
+            # If the last message is a HumanMessage (nudge), route back to agent
+            if isinstance(last_message, HumanMessage):
+                return "agent"
+            if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
                 return "tools"
             return END
 
@@ -421,7 +475,7 @@ class AgentService:
         workflow.add_node("agent", call_model)
         workflow.add_node("tools", tool_node)
         workflow.set_entry_point("agent")
-        workflow.add_conditional_edges("agent", should_continue)
+        workflow.add_conditional_edges("agent", should_continue, {"tools": "tools", "agent": "agent", END: END})
         workflow.add_edge("tools", "agent")
 
         app = workflow.compile()
@@ -437,9 +491,24 @@ class AgentService:
         try:
             final_state = await app.ainvoke(initial_state)
         except Exception as e:
+            error_str = str(e)
             logger.error(f"LangGraph agent error: {e}", exc_info=True)
+            
+            # Detect HuggingFace payment / quota errors
+            if "402" in error_str or "Payment Required" in error_str or "depleted" in error_str.lower():
+                explanation = (
+                    "⚠️ **HuggingFace API credits depleted**\n\n"
+                    "Your monthly HuggingFace Inference API credits have run out.\n\n"
+                    "**Options:**\n"
+                    "- Switch to **Gemini** or **Qwen** (local) using the model selector above\n"
+                    "- Purchase more HuggingFace credits at [huggingface.co](https://huggingface.co/settings/billing)\n"
+                    "- Subscribe to HuggingFace PRO for 20x more usage"
+                )
+            else:
+                explanation = f"⚠️ **Agent error:** {error_str}"
+            
             return AgentResponse(
-                explanation=f"Agent error: {str(e)}",
+                explanation=explanation,
                 actions=[],
                 model_used=model_name,
                 context_tokens_approx=context_size,

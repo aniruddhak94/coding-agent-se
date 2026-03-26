@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useState, useEffect } from "react";
 
 const navItems = [
     { icon: "💬", label: "Chat", href: "/chat" },
@@ -12,15 +12,45 @@ const navItems = [
     { icon: "📤", label: "Upload", href: "/upload" },
 ];
 
-const recentChats = [
-    { id: 1, title: "Code Review" },
-    { id: 2, title: "React Help" },
-    { id: 3, title: "API Design" },
-];
+export interface RecentChat {
+    id: string;
+    title: string;
+    timestamp: number;
+}
+
+/** Reads recent chats from localStorage (stored by the chat page). */
+function loadRecentChats(): RecentChat[] {
+    if (typeof window === "undefined") return [];
+    try {
+        const raw = localStorage.getItem("recent_chats");
+        if (!raw) return [];
+        return JSON.parse(raw) as RecentChat[];
+    } catch {
+        return [];
+    }
+}
 
 export default function Sidebar() {
     const pathname = usePathname();
+    const router = useRouter();
     const [isMobileOpen, setIsMobileOpen] = useState(false);
+    const [recentChats, setRecentChats] = useState<RecentChat[]>([]);
+
+    // Load on mount and refresh when pathname changes (new chat created)
+    useEffect(() => {
+        setRecentChats(loadRecentChats().slice(0, 5));
+    }, [pathname]);
+
+    // Also listen for storage events so sidebar updates across tabs
+    useEffect(() => {
+        const onStorage = (e: StorageEvent) => {
+            if (e.key === "recent_chats") {
+                setRecentChats(loadRecentChats().slice(0, 5));
+            }
+        };
+        window.addEventListener("storage", onStorage);
+        return () => window.removeEventListener("storage", onStorage);
+    }, []);
 
     return (
         <>
@@ -87,19 +117,29 @@ export default function Sidebar() {
                         })}
                     </ul>
 
-                    {/* Recent Chats */}
+                    {/* Recent Chats - dynamic from localStorage */}
                     <div className="mt-6">
                         <div className="text-xs font-medium text-[#5A7268] uppercase tracking-wider px-3 mb-2">Recent</div>
-                        <ul className="space-y-1">
-                            {recentChats.map((chat) => (
-                                <li key={chat.id}>
-                                    <button className="w-full flex items-center gap-3 px-3 py-2 text-sm text-[#8FAEA2] hover:text-[#E6F1EC] hover:bg-[#1A2420] rounded-xl transition-colors text-left">
-                                        <span className="w-1.5 h-1.5 rounded-full bg-[#5A7268]" />
-                                        <span className="truncate">{chat.title}</span>
-                                    </button>
-                                </li>
-                            ))}
-                        </ul>
+                        {recentChats.length === 0 ? (
+                            <p className="px-3 text-xs text-[#3D5249] italic">No recent chats</p>
+                        ) : (
+                            <ul className="space-y-1">
+                                {recentChats.map((chat) => (
+                                    <li key={chat.id}>
+                                        <button
+                                            onClick={() => {
+                                                setIsMobileOpen(false);
+                                                router.push(`/chat?session=${chat.id}`);
+                                            }}
+                                            className="w-full flex items-center gap-3 px-3 py-2 text-sm text-[#8FAEA2] hover:text-[#E6F1EC] hover:bg-[#1A2420] rounded-xl transition-colors text-left"
+                                        >
+                                            <span className="w-1.5 h-1.5 rounded-full bg-[#5A7268] flex-shrink-0" />
+                                            <span className="truncate">{chat.title}</span>
+                                        </button>
+                                    </li>
+                                ))}
+                            </ul>
+                        )}
                     </div>
                 </nav>
 

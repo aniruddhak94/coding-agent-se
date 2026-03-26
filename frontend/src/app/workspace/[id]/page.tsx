@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { apiClient, WorkspaceResponse, FileNode, FileTreeResponse } from '@/lib/api';
+import { apiClient, WorkspaceResponse, FileNode } from '@/lib/api';
 import { FileExplorer } from '@/components/workspace/FileExplorer';
 import { EditorTabs, EditorTab } from '@/components/workspace/EditorTabs';
 import { CodeEditor } from '@/components/workspace/CodeEditor';
@@ -65,6 +65,12 @@ export default function WorkspacePage() {
     const dragStartYRef = useRef(0);
     const dragStartHeightRef = useRef(0);
 
+    // AI panel horizontal resize state
+    const [aiPanelWidth, setAiPanelWidth] = useState(320); // default w-80 = 320px
+    const isAiDraggingRef = useRef(false);
+    const aiDragStartXRef = useRef(0);
+    const aiDragStartWidthRef = useRef(0);
+
     // Drag-to-resize handlers
     const handleDragStart = useCallback((e: React.MouseEvent) => {
         e.preventDefault();
@@ -92,6 +98,35 @@ export default function WorkspacePage() {
         window.addEventListener('mousemove', handleMouseMove);
         window.addEventListener('mouseup', handleMouseUp);
     }, [terminalHeight]);
+
+    // AI panel horizontal drag-to-resize handlers
+    const handleAiDragStart = useCallback((e: React.MouseEvent) => {
+        e.preventDefault();
+        isAiDraggingRef.current = true;
+        aiDragStartXRef.current = e.clientX;
+        aiDragStartWidthRef.current = aiPanelWidth;
+        document.body.style.cursor = 'ew-resize';
+        document.body.style.userSelect = 'none';
+
+        const handleMouseMove = (ev: MouseEvent) => {
+            if (!isAiDraggingRef.current) return;
+            // Dragging left = increase width, dragging right = decrease width
+            const delta = aiDragStartXRef.current - ev.clientX;
+            const newWidth = Math.min(Math.max(aiDragStartWidthRef.current + delta, 260), 600);
+            setAiPanelWidth(newWidth);
+        };
+
+        const handleMouseUp = () => {
+            isAiDraggingRef.current = false;
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+            window.removeEventListener('mousemove', handleMouseMove);
+            window.removeEventListener('mouseup', handleMouseUp);
+        };
+
+        window.addEventListener('mousemove', handleMouseMove);
+        window.addEventListener('mouseup', handleMouseUp);
+    }, [aiPanelWidth]);
 
     // --- Data Fetching ---
 
@@ -595,13 +630,23 @@ export default function WorkspacePage() {
 
                             {/* AI Agent Panel */}
                             {showAI && (
-                                <div className="w-80 shrink-0 border-l border-[#1F2D28]">
-                                    <WorkspaceChat
-                                        workspaceId={id}
-                                        isVisible={showAI}
-                                        onFileChanged={() => fetchFiles('.')}
+                                <>
+                                    {/* Horizontal drag handle */}
+                                    <div
+                                        className="w-1 cursor-ew-resize hover:bg-[#2EFF7B]/40 bg-[#1F2D28] transition-colors shrink-0"
+                                        onMouseDown={handleAiDragStart}
+                                        onDoubleClick={() => setAiPanelWidth(320)}
                                     />
-                                </div>
+                                    <div className="shrink-0 overflow-hidden flex flex-col" style={{ width: `${aiPanelWidth}px` }}>
+                                        <WorkspaceChat
+                                            workspaceId={id}
+                                            isVisible={showAI}
+                                            activeFilePath={activePath}
+                                            openFilePaths={Object.keys(openFiles)}
+                                            onFileChanged={() => fetchFiles('.')}
+                                        />
+                                    </div>
+                                </>
                             )}
                         </div>
 

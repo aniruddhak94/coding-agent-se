@@ -5,17 +5,18 @@ import { useRouter } from 'next/navigation';
 import { apiClient, WorkspaceResponse } from '@/lib/api';
 import { 
     FolderGit2, 
-    Play, 
-    Square, 
     Trash2, 
     Loader2,
-    ExternalLink
+    ExternalLink,
+    AlertCircle
 } from 'lucide-react';
 
 export default function WorkspaceListPage() {
     const router = useRouter();
     const [workspaces, setWorkspaces] = useState<WorkspaceResponse[]>([]);
     const [loading, setLoading] = useState(true);
+    const [deletingId, setDeletingId] = useState<number | null>(null);
+    const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
     useEffect(() => {
         loadWorkspaces();
@@ -31,6 +32,29 @@ export default function WorkspaceListPage() {
         } finally {
             setLoading(false);
         }
+    };
+
+    const handleDelete = async (e: React.MouseEvent, id: number) => {
+        e.stopPropagation(); // prevent navigating into the workspace
+        if (confirmDeleteId !== id) {
+            setConfirmDeleteId(id);
+            return;
+        }
+        setDeletingId(id);
+        setConfirmDeleteId(null);
+        try {
+            await apiClient.destroyWorkspace(id);
+            setWorkspaces((prev) => prev.filter((ws) => ws.id !== id));
+        } catch (err) {
+            console.error('Failed to delete workspace:', err);
+        } finally {
+            setDeletingId(null);
+        }
+    };
+
+    const cancelConfirm = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        setConfirmDeleteId(null);
     };
 
     const statusColors: Record<string, string> = {
@@ -63,9 +87,9 @@ export default function WorkspaceListPage() {
                 ) : (
                     <div className="grid gap-4">
                         {workspaces.map((ws) => (
-                            <div 
+                            <div
                                 key={ws.id}
-                                className="bg-[#111917] border border-[#1F2D28] rounded-xl p-4 hover:border-[#2EFF7B]/30 transition-colors cursor-pointer group"
+                                className="bg-[#111917] border border-[#1F2D28] rounded-xl p-4 hover:border-[#2EFF7B]/30 transition-colors cursor-pointer group relative"
                                 onClick={() => router.push(`/workspace/${ws.id}`)}
                             >
                                 <div className="flex items-center justify-between">
@@ -87,7 +111,42 @@ export default function WorkspaceListPage() {
                                             </div>
                                         </div>
                                     </div>
-                                    <ExternalLink className="w-4 h-4 text-[#5A7268] group-hover:text-[#2EFF7B] transition-colors" />
+
+                                    {/* Actions */}
+                                    <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                        {confirmDeleteId === ws.id ? (
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-xs text-[#FF6B6B] flex items-center gap-1">
+                                                    <AlertCircle className="w-3 h-3" /> Confirm?
+                                                </span>
+                                                <button
+                                                    onClick={(e) => handleDelete(e, ws.id)}
+                                                    className="px-2 py-1 text-xs bg-red-500/20 text-red-400 hover:bg-red-500/40 border border-red-500/30 rounded-lg transition-colors"
+                                                >
+                                                    Delete
+                                                </button>
+                                                <button
+                                                    onClick={cancelConfirm}
+                                                    className="px-2 py-1 text-xs bg-[#1A2420] text-[#8FAEA2] hover:bg-[#253530] border border-[#1F2D28] rounded-lg transition-colors"
+                                                >
+                                                    Cancel
+                                                </button>
+                                            </div>
+                                        ) : deletingId === ws.id ? (
+                                            <Loader2 className="w-4 h-4 animate-spin text-red-400" />
+                                        ) : (
+                                            <>
+                                                <button
+                                                    onClick={(e) => handleDelete(e, ws.id)}
+                                                    title="Delete workspace"
+                                                    className="p-1.5 text-[#5A7268] hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                                                >
+                                                    <Trash2 className="w-4 h-4" />
+                                                </button>
+                                                <ExternalLink className="w-4 h-4 text-[#5A7268] group-hover:text-[#2EFF7B] transition-colors" />
+                                            </>
+                                        )}
+                                    </div>
                                 </div>
                                 {ws.error_message && (
                                     <div className="mt-3 text-xs text-red-400 bg-red-500/10 px-3 py-2 rounded-lg">
