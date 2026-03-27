@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
-import { AgentAction, AgentProvider, apiClient } from '@/lib/api';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { AgentAction, AgentProvider, AgentStreamEvent, apiClient } from '@/lib/api';
 import { DiffViewer } from './DiffViewer';
 import {
     Bot,
@@ -13,13 +13,22 @@ import {
     Loader2,
     Send,
     Sparkles,
+    Square,
     TerminalSquare,
     Trash2,
     User,
+    Wrench,
     XCircle,
 } from 'lucide-react';
 
 type ActionDecision = 'pending' | 'accepted' | 'rejected';
+
+interface ToolCallCard {
+    name: string;
+    args: Record<string, unknown>;
+    status: 'running' | 'done' | 'error';
+    output?: string;
+}
 
 interface ChatMessage {
     role: 'user' | 'agent';
@@ -27,6 +36,7 @@ interface ChatMessage {
     actions?: AgentAction[];
     modelUsed?: string;
     tokensApprox?: number;
+    toolCalls?: ToolCallCard[];
 }
 
 interface WorkspaceChatProps {
@@ -62,11 +72,15 @@ export const WorkspaceChat: React.FC<WorkspaceChatProps> = ({
         },
     ]);
     const [input, setInput] = useState('');
-    const [isPlanning, setIsPlanning] = useState(false);
+    const [isStreaming, setIsStreaming] = useState(false);
+    const [streamingContent, setStreamingContent] = useState('');
+    const [streamingTools, setStreamingTools] = useState<ToolCallCard[]>([]);
+    const [streamingModel, setStreamingModel] = useState('');
     const [pendingActions, setPendingActions] = useState<AgentAction[] | null>(null);
     const [actionStates, setActionStates] = useState<Record<number, ActionDecision>>({});
     const [isApplying, setIsApplying] = useState(false);
     const [provider, setProvider] = useState<AgentProvider>('auto');
+    const abortControllerRef = useRef<AbortController | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -80,7 +94,7 @@ export const WorkspaceChat: React.FC<WorkspaceChatProps> = ({
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [messages, pendingActions]);
+    }, [messages, streamingContent, streamingTools, pendingActions]);
 
     useEffect(() => {
         if (isVisible) {
@@ -88,72 +102,168 @@ export const WorkspaceChat: React.FC<WorkspaceChatProps> = ({
         }
     }, [isVisible]);
 
-    const handleSend = async () => {
-        const prompt = input.trim();
-        if (!prompt || isPlanning) {
-            return;
+    const handleStop = useCallback(() => {
+        abortControllerRef.current?.abort();
+        abortControllerRef.current = null;
+        // Finalize the streaming message
+        if (streamingContent || streamingTools.length > 0) {
+            setMessages((prev) => [
+                ...prev,
+                {
+                    role: 'agent',
+                    content: streamingContent || '(Generation stopped)',
+                    toolCalls: streamingTools.length > 0 ? streamingTools : undefined,
+                },
+            ]);
         }
+        setStreamingContent('');
+        setStreamingTools([]);
+        setStreamingModel('');
+        setIsStreaming(false);
+    }, [streamingContent, streamingTools]);
+
+    const handleSend = useCallback(async () => {
+        const prompt = input.trim();
+        if (!prompt || isStreaming) return;
 
         setInput('');
         setMessages((prev) => [...prev, { role: 'user', content: prompt }]);
-        setIsPlanning(true);
+        setIsStreaming(true);
+        setStreamingContent('');
+        setStreamingTools([]);
+        setStreamingModel('');
         setPendingActions(null);
         setActionStates({});
 
-        try {
-            const response = await apiClient.agentAct({
+        const controller = apiClient.agentStream(
+            {
                 workspace_id: workspaceId,
                 prompt,
                 file_paths: contextFilePaths,
                 provider,
-            });
+            },
+            // onEvent
+            (event: AgentStreamEvent) => {
+                switch (event.type) {
+                    case 'status':
+                        setStreamingModel(event.model || '');
+                        break;
 
-            setMessages((prev) => [
-                ...prev,
-                {
-                    role: 'agent',
-                    content: response.explanation,
-                    actions: response.actions,
-                    modelUsed: response.model_used,
-                    tokensApprox: response.context_tokens_approx,
-                },
-            ]);
+                    case 'token':
+                        setStreamingContent((prev) => prev + event.content);
+                        break;
 
-            if (response.actions.length > 0) {
-                setPendingActions(response.actions);
-                setActionStates(
-                    response.actions.reduce<Record<number, ActionDecision>>((next, _action, index) => {
-                        next[index] = 'pending';
-                        return next;
-                    }, {})
-                );
+                    case 'tool_start':
+                        setStreamingTools((prev) => [
+                            ...prev,
+                            { name: event.name, args: event.args, status: 'running' },
+                        ]);
+                        break;
+
+                    case 'tool_result':
+                        setStreamingTools((prev) =>
+                            prev.map((tool) =>
+                                tool.name === event.name && tool.status === 'running'
+                                    ? { ...tool, status: 'done' as const, output: event.output }
+                                    : tool
+                            )
+                        );
+                        break;
+
+                    case 'done':
+                        // Finalize: move streaming content to messages
+                        setStreamingContent((currentContent) => {
+                            setStreamingTools((currentTools) => {
+                                setMessages((prev) => [
+                                    ...prev,
+                                    {
+                                        role: 'agent',
+                                        content: currentContent || 'Agent completed.',
+                                        modelUsed: event.model_used,
+                                        tokensApprox: event.context_tokens_approx,
+                                        toolCalls:
+                                            currentTools.length > 0 ? currentTools : undefined,
+                                    },
+                                ]);
+                                return [];
+                            });
+
+                            // Set up pending actions for accept/reject
+                            if (event.actions && event.actions.length > 0) {
+                                setPendingActions(event.actions);
+                                setActionStates(
+                                    event.actions.reduce<Record<number, ActionDecision>>(
+                                        (next, _action, index) => {
+                                            next[index] = 'pending';
+                                            return next;
+                                        },
+                                        {}
+                                    )
+                                );
+                            }
+
+                            return '';
+                        });
+                        setStreamingModel('');
+                        setIsStreaming(false);
+                        abortControllerRef.current = null;
+                        break;
+
+                    case 'error':
+                        setStreamingContent((currentContent) => {
+                            setStreamingTools((currentTools) => {
+                                setMessages((prev) => [
+                                    ...prev,
+                                    {
+                                        role: 'agent',
+                                        content:
+                                            currentContent ||
+                                            `⚠️ ${event.message}`,
+                                        toolCalls:
+                                            currentTools.length > 0 ? currentTools : undefined,
+                                    },
+                                ]);
+                                return [];
+                            });
+                            return '';
+                        });
+                        setStreamingModel('');
+                        setIsStreaming(false);
+                        abortControllerRef.current = null;
+                        break;
+                }
+            },
+            // onError
+            (error: Error) => {
+                setMessages((prev) => [
+                    ...prev,
+                    {
+                        role: 'agent',
+                        content: `Error: ${error.message}`,
+                    },
+                ]);
+                setStreamingContent('');
+                setStreamingTools([]);
+                setStreamingModel('');
+                setIsStreaming(false);
+                abortControllerRef.current = null;
+            },
+            // onComplete
+            () => {
+                // SSE stream closed naturally — done event handles finalization
             }
-        } catch (err: unknown) {
-            const message = err instanceof Error ? err.message : 'Failed to reach AI agent';
-            setMessages((prev) => [
-                ...prev,
-                {
-                    role: 'agent',
-                    content: `Error while planning changes: ${message}`,
-                },
-            ]);
-        } finally {
-            setIsPlanning(false);
-        }
-    };
+        );
+
+        abortControllerRef.current = controller;
+    }, [input, isStreaming, workspaceId, contextFilePaths, provider]);
 
     const handleApply = async () => {
-        if (!pendingActions) {
-            return;
-        }
+        if (!pendingActions) return;
 
         const accepted = pendingActions.filter((_, index) => actionStates[index] === 'accepted');
-        if (accepted.length === 0) {
-            return;
-        }
+        if (accepted.length === 0) return;
 
         setIsApplying(true);
-
         try {
             const result = await apiClient.agentApply(workspaceId, accepted);
             const successCount = result.results.filter((item) => item.success).length;
@@ -170,23 +280,13 @@ export const WorkspaceChat: React.FC<WorkspaceChatProps> = ({
             const summaryLines = [
                 `Applied ${successCount} of ${result.results.length} approved action(s).`,
             ];
-
-            if (failureCount > 0) {
-                summaryLines.push(`${failureCount} action(s) failed.`);
-            }
-
-            if (details) {
-                summaryLines.push('', details);
-            }
+            if (failureCount > 0) summaryLines.push(`${failureCount} action(s) failed.`);
+            if (details) summaryLines.push('', details);
 
             setMessages((prev) => [
                 ...prev,
-                {
-                    role: 'agent',
-                    content: summaryLines.join('\n'),
-                },
+                { role: 'agent', content: summaryLines.join('\n') },
             ]);
-
             setPendingActions(null);
             setActionStates({});
             onFileChanged?.();
@@ -194,10 +294,7 @@ export const WorkspaceChat: React.FC<WorkspaceChatProps> = ({
             const message = err instanceof Error ? err.message : 'Unknown error';
             setMessages((prev) => [
                 ...prev,
-                {
-                    role: 'agent',
-                    content: `Failed to apply approved actions: ${message}`,
-                },
+                { role: 'agent', content: `Failed to apply: ${message}` },
             ]);
         } finally {
             setIsApplying(false);
@@ -205,12 +302,9 @@ export const WorkspaceChat: React.FC<WorkspaceChatProps> = ({
     };
 
     const handleAcceptAll = () => {
-        if (!pendingActions) {
-            return;
-        }
-
+        if (!pendingActions) return;
         setActionStates(
-            pendingActions.reduce<Record<number, ActionDecision>>((next, _action, index) => {
+            pendingActions.reduce<Record<number, ActionDecision>>((next, _, index) => {
                 next[index] = 'accepted';
                 return next;
             }, {})
@@ -218,12 +312,9 @@ export const WorkspaceChat: React.FC<WorkspaceChatProps> = ({
     };
 
     const handleRejectAll = () => {
-        if (!pendingActions) {
-            return;
-        }
-
+        if (!pendingActions) return;
         setActionStates(
-            pendingActions.reduce<Record<number, ActionDecision>>((next, _action, index) => {
+            pendingActions.reduce<Record<number, ActionDecision>>((next, _, index) => {
                 next[index] = 'rejected';
                 return next;
             }, {})
@@ -236,14 +327,20 @@ export const WorkspaceChat: React.FC<WorkspaceChatProps> = ({
 
     return (
         <div className={`h-full flex flex-col bg-[#0B0F0E] border-l border-[#1F2D28] ${isVisible ? '' : 'hidden'}`}>
+            {/* Header */}
             <div className="flex items-center justify-between gap-3 px-3 py-2 border-b border-[#1F2D28] bg-[#111917] shrink-0">
                 <div className="min-w-0">
                     <div className="flex items-center gap-2">
                         <Sparkles className="w-4 h-4 text-[#2EFF7B]" />
                         <span className="text-sm font-semibold text-[#E6F1EC]">AI Agent</span>
+                        {streamingModel && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#2EFF7B]/10 text-[#2EFF7B] font-mono">
+                                {streamingModel}
+                            </span>
+                        )}
                     </div>
                     <p className="text-[10px] text-[#5A7268] mt-1">
-                        Plans with `/agent/act`, applies with `/agent/apply`.
+                        Real-time streaming agent with tool calls
                     </p>
                 </div>
 
@@ -261,6 +358,7 @@ export const WorkspaceChat: React.FC<WorkspaceChatProps> = ({
                 </select>
             </div>
 
+            {/* Context files */}
             {contextFilePaths && contextFilePaths.length > 0 && (
                 <div className="px-3 py-2 border-b border-[#1F2D28] bg-[#0F1513] shrink-0">
                     <div className="text-[10px] uppercase tracking-wide text-[#5A7268]">Context Files</div>
@@ -277,6 +375,7 @@ export const WorkspaceChat: React.FC<WorkspaceChatProps> = ({
                 </div>
             )}
 
+            {/* Messages */}
             <div className="flex-1 overflow-y-auto p-3 space-y-3 min-h-0">
                 {messages.map((message, index) => (
                     <div key={index} className={`flex gap-2 ${message.role === 'user' ? 'justify-end' : ''}`}>
@@ -293,12 +392,20 @@ export const WorkspaceChat: React.FC<WorkspaceChatProps> = ({
                                     : 'bg-[#1A2420] text-[#E6F1EC]'
                             }`}
                         >
+                            {/* Tool call cards */}
+                            {message.toolCalls && message.toolCalls.length > 0 && (
+                                <div className="mb-2 space-y-1">
+                                    {message.toolCalls.map((tc, i) => (
+                                        <ToolCallBadge key={i} tool={tc} />
+                                    ))}
+                                </div>
+                            )}
                             <div className="whitespace-pre-wrap break-words">{message.content}</div>
                             {message.modelUsed && (
                                 <div className="flex items-center gap-1 mt-1.5 text-[10px] text-[#5A7268]">
                                     <Cpu className="w-3 h-3" />
                                     <span>{message.modelUsed}</span>
-                                    <span>-</span>
+                                    <span>·</span>
                                     <span>~{message.tokensApprox} tokens</span>
                                 </div>
                             )}
@@ -312,18 +419,39 @@ export const WorkspaceChat: React.FC<WorkspaceChatProps> = ({
                     </div>
                 ))}
 
-                {isPlanning && (
+                {/* Active streaming message */}
+                {isStreaming && (
                     <div className="flex gap-2">
-                        <div className="w-6 h-6 rounded-lg bg-[#2EFF7B]/15 flex items-center justify-center shrink-0">
+                        <div className="w-6 h-6 rounded-lg bg-[#2EFF7B]/15 flex items-center justify-center shrink-0 mt-0.5">
                             <Bot className="w-3.5 h-3.5 text-[#2EFF7B]" />
                         </div>
-                        <div className="bg-[#1A2420] rounded-xl px-3 py-2 text-sm text-[#8FAEA2] flex items-center gap-2">
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            Planning actions from the workspace state...
+                        <div className="max-w-[85%] rounded-xl px-3 py-2 text-sm bg-[#1A2420] text-[#E6F1EC]">
+                            {/* Live tool cards */}
+                            {streamingTools.length > 0 && (
+                                <div className="mb-2 space-y-1">
+                                    {streamingTools.map((tc, i) => (
+                                        <ToolCallBadge key={i} tool={tc} />
+                                    ))}
+                                </div>
+                            )}
+                            {streamingContent ? (
+                                <div className="whitespace-pre-wrap break-words">
+                                    {streamingContent}
+                                    <span className="inline-block w-2 h-4 bg-[#2EFF7B] animate-pulse ml-0.5 rounded-sm" />
+                                </div>
+                            ) : (
+                                <div className="flex items-center gap-2 text-[#8FAEA2]">
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                    {streamingTools.length > 0
+                                        ? 'Executing tools...'
+                                        : 'Thinking...'}
+                                </div>
+                            )}
                         </div>
                     </div>
                 )}
 
+                {/* Pending actions (accept/reject) */}
                 {pendingActions && pendingActions.length > 0 && (
                     <div className="border border-[#1F2D28] rounded-xl overflow-hidden bg-[#111917]">
                         <div className="flex items-center justify-between gap-3 px-3 py-2 border-b border-[#1F2D28]">
@@ -332,10 +460,9 @@ export const WorkspaceChat: React.FC<WorkspaceChatProps> = ({
                                     Proposed Actions ({pendingActions.length})
                                 </span>
                                 <p className="text-[10px] text-[#5A7268] mt-0.5">
-                                    Accept the actions you want to send to `/agent/apply`.
+                                    Review and accept the actions you want to apply.
                                 </p>
                             </div>
-
                             <div className="flex items-center gap-1 shrink-0">
                                 <button
                                     onClick={handleAcceptAll}
@@ -393,6 +520,7 @@ export const WorkspaceChat: React.FC<WorkspaceChatProps> = ({
                 <div ref={messagesEndRef} />
             </div>
 
+            {/* Input */}
             <div className="shrink-0 p-3 border-t border-[#1F2D28]">
                 <div className="flex items-end gap-2">
                     <textarea
@@ -410,19 +538,75 @@ export const WorkspaceChat: React.FC<WorkspaceChatProps> = ({
                         className="flex-1 bg-[#1A2420] border border-[#1F2D28] rounded-xl px-3 py-2 text-sm text-[#E6F1EC] placeholder-[#5A7268] focus:outline-none focus:border-[#2EFF7B]/50 resize-none"
                         style={{ maxHeight: '120px' }}
                     />
-                    <button
-                        onClick={handleSend}
-                        disabled={!input.trim() || isPlanning}
-                        className="p-2.5 bg-[#2EFF7B] text-[#0B0F0E] rounded-xl hover:bg-[#1ED760] disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
-                        aria-label="Send message"
-                    >
-                        <Send className="w-4 h-4" />
-                    </button>
+                    {isStreaming ? (
+                        <button
+                            onClick={handleStop}
+                            className="p-2.5 bg-red-500/20 text-red-400 rounded-xl hover:bg-red-500/30 transition-colors shrink-0"
+                            aria-label="Stop generation"
+                        >
+                            <Square className="w-4 h-4" />
+                        </button>
+                    ) : (
+                        <button
+                            onClick={handleSend}
+                            disabled={!input.trim()}
+                            className="p-2.5 bg-[#2EFF7B] text-[#0B0F0E] rounded-xl hover:bg-[#1ED760] disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
+                            aria-label="Send message"
+                        >
+                            <Send className="w-4 h-4" />
+                        </button>
+                    )}
                 </div>
             </div>
         </div>
     );
 };
+
+// ── Tool Call Badge ───────────────────────────────────────────────
+
+const ToolCallBadge: React.FC<{ tool: ToolCallCard }> = ({ tool }) => {
+    const [expanded, setExpanded] = useState(false);
+    const argSummary = Object.entries(tool.args)
+        .map(([k, v]) => {
+            const val = typeof v === 'string' ? v : JSON.stringify(v);
+            return `${k}=${val.length > 30 ? val.slice(0, 30) + '…' : val}`;
+        })
+        .join(', ');
+
+    return (
+        <div className="rounded-lg border border-[#1F2D28] bg-[#0F1513] text-[11px] overflow-hidden">
+            <button
+                onClick={() => setExpanded((p) => !p)}
+                className="w-full flex items-center gap-1.5 px-2 py-1.5 hover:bg-[#1A2420]/50 transition-colors text-left"
+            >
+                {tool.status === 'running' ? (
+                    <Loader2 className="w-3 h-3 text-[#E6CD69] animate-spin shrink-0" />
+                ) : tool.status === 'done' ? (
+                    <CheckCircle2 className="w-3 h-3 text-[#2EFF7B] shrink-0" />
+                ) : (
+                    <XCircle className="w-3 h-3 text-red-400 shrink-0" />
+                )}
+                <Wrench className="w-3 h-3 text-[#8FAEA2] shrink-0" />
+                <span className="text-[#E6F1EC] font-mono font-semibold">{tool.name}</span>
+                <span className="text-[#5A7268] truncate flex-1">({argSummary})</span>
+                {tool.output && (
+                    expanded
+                        ? <ChevronUp className="w-3 h-3 text-[#5A7268] shrink-0" />
+                        : <ChevronDown className="w-3 h-3 text-[#5A7268] shrink-0" />
+                )}
+            </button>
+            {expanded && tool.output && (
+                <div className="px-2 py-1.5 border-t border-[#1F2D28] max-h-32 overflow-y-auto">
+                    <pre className="text-[10px] text-[#8FAEA2] whitespace-pre-wrap break-words font-mono">
+                        {tool.output}
+                    </pre>
+                </div>
+            )}
+        </div>
+    );
+};
+
+// ── Action Card (accept/reject) ──────────────────────────────────
 
 const ActionCard: React.FC<{
     action: AgentAction;
