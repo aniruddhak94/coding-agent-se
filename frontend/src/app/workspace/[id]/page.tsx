@@ -8,7 +8,6 @@ import { EditorTabs, EditorTab } from '@/components/workspace/EditorTabs';
 import { CodeEditor } from '@/components/workspace/CodeEditor';
 import { WorkspaceTerminal } from '@/components/workspace/Terminal';
 import { WorkspaceChat } from '@/components/workspace/WorkspaceChat';
-import { PreviewPanel } from '@/components/workspace/PreviewPanel';
 import { 
     Play, 
     Square, 
@@ -24,8 +23,7 @@ import {
     RefreshCw,
     Sparkles,
     PanelRightClose,
-    PanelRightOpen,
-    Globe
+    PanelRightOpen
 } from 'lucide-react';
 
 interface OpenFile {
@@ -57,9 +55,6 @@ export default function WorkspacePage() {
 
     // AI panel state
     const [showAI, setShowAI] = useState(false);
-
-    // Preview panel state
-    const [showPreview, setShowPreview] = useState(false);
 
     // Save toast state
     const [showSaveToast, setShowSaveToast] = useState(false);
@@ -133,38 +128,6 @@ export default function WorkspacePage() {
         window.addEventListener('mouseup', handleMouseUp);
     }, [aiPanelWidth]);
 
-    // Preview panel horizontal drag-to-resize handlers
-    const [previewWidth, setPreviewWidth] = useState(400); // default w-400px
-    const isPreviewDraggingRef = useRef(false);
-    const previewDragStartXRef = useRef(0);
-    const previewDragStartWidthRef = useRef(0);
-
-    const handlePreviewDragStart = useCallback((e: React.MouseEvent) => {
-        e.preventDefault();
-        isPreviewDraggingRef.current = true;
-        previewDragStartXRef.current = e.clientX;
-        previewDragStartWidthRef.current = previewWidth;
-        document.body.style.cursor = 'ew-resize';
-        document.body.style.userSelect = 'none';
-
-        const handleMouseMove = (ev: MouseEvent) => {
-            if (!isPreviewDraggingRef.current) return;
-            const delta = previewDragStartXRef.current - ev.clientX;
-            const newWidth = Math.min(Math.max(previewDragStartWidthRef.current + delta, 300), 800);
-            setPreviewWidth(newWidth);
-        };
-
-        const handleMouseUp = () => {
-            isPreviewDraggingRef.current = false;
-            document.body.style.cursor = '';
-            document.body.style.userSelect = '';
-            window.removeEventListener('mousemove', handleMouseMove);
-            window.removeEventListener('mouseup', handleMouseUp);
-        };
-
-        window.addEventListener('mousemove', handleMouseMove);
-        window.addEventListener('mouseup', handleMouseUp);
-    }, [previewWidth]);
 
     // --- Data Fetching ---
 
@@ -577,21 +540,6 @@ export default function WorkspacePage() {
                             {showAI ? <PanelRightClose className="w-3.5 h-3.5" /> : <PanelRightOpen className="w-3.5 h-3.5" />}
                         </button>
                     )}
-
-                    {status === 'running' && (
-                        <button 
-                            onClick={() => setShowPreview(!showPreview)}
-                            className={`flex items-center gap-2 px-3 py-1.5 bg-[#1A2420] border rounded-lg text-sm transition-colors ${
-                                showPreview 
-                                    ? 'border-[#2EFF7B] text-[#2EFF7B]' 
-                                    : 'border-[#1F2D28] text-[#8FAEA2] hover:border-[#2EFF7B]/50 hover:text-[#2EFF7B]'
-                            }`}
-                            title={showPreview ? 'Hide Preview' : 'Show Preview'}
-                        >
-                            <Globe className="w-4 h-4" />
-                            {showPreview ? <PanelRightClose className="w-3.5 h-3.5" /> : <PanelRightOpen className="w-3.5 h-3.5" />}
-                        </button>
-                    )}
                     
                     <button 
                         onClick={() => handleAction('destroy')}
@@ -680,20 +628,6 @@ export default function WorkspacePage() {
                                     </div>
                                 )}
                             </div>
-
-                            {/* Preview Panel */}
-                            {showPreview && (
-                                <>
-                                    <div
-                                        className="w-1 cursor-ew-resize hover:bg-[#2EFF7B]/40 bg-[#1F2D28] transition-colors shrink-0"
-                                        onMouseDown={handlePreviewDragStart}
-                                        onDoubleClick={() => setPreviewWidth(400)}
-                                    />
-                                    <div className="shrink-0 overflow-hidden flex flex-col bg-[#0B0F0E]" style={{ width: `${previewWidth}px` }}>
-                                        <PreviewPanel workspaceId={id} isVisible={showPreview} />
-                                    </div>
-                                </>
-                            )}
 
                             {/* AI Agent Panel */}
                             {showAI && (
