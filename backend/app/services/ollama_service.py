@@ -1,14 +1,24 @@
-"""Service for interacting with Qwen 3.5 via Ollama."""
+"""Service for interacting with Ollama models (both local and cloud variants)."""
 import httpx
+import logging
 from typing import AsyncGenerator, Optional
 
+logger = logging.getLogger(__name__)
 
 OLLAMA_BASE_URL = "http://localhost:11434"
-OLLAMA_MODEL = "qwen3.5:9b"
 
+# Map frontend provider keys to backend Ollama models
+MODEL_MAPPING = {
+    "qwen": "qwen3.5:9b",
+    "qwen-cloud": "qwen3.5:397b-cloud",
+    "gemma4": "gemma4:latest",
+    "gpt-oss-cloud": "gpt-oss:120b-cloud",
+    "kimi-cloud": "kimi-k2.5:cloud",
+    "minimax-cloud": "minimax-m2.7:cloud",
+}
 
-class QwenService:
-    """Service for interacting with Qwen 3.5 via Ollama API."""
+class OllamaService:
+    """Unified service for interacting with any Ollama API model."""
 
     SYSTEM_PROMPT = """You are an expert coding assistant called ICA (Intelligent Coding Agent).
 You help developers with:
@@ -32,13 +42,14 @@ Support languages: Python, JavaScript, TypeScript, C++, Java, and more.
 
 Format responses using Markdown with proper code blocks.
 
-IMPORTANT: Do NOT wrap your response in <think> tags or show internal reasoning. Respond directly. Use /no_think mode."""
+IMPORTANT: Do NOT wrap your response in <think> tags or show internal reasoning. Respond directly. Use /no_think mode if available."""
 
-    def __init__(self, model: Optional[str] = None):
+    def __init__(self, provider_key: str):
         self.base_url = OLLAMA_BASE_URL
-        self.model = model or OLLAMA_MODEL
+        self.provider_key = provider_key
+        self.model = MODEL_MAPPING.get(provider_key, "qwen3.5:9b")
         self._available = None
-        print(f"Qwen service initialized (model: {self.model})")
+        logger.info(f"OllamaService initialized (provider: {provider_key}, model: {self.model})")
 
     async def _check_available(self) -> bool:
         """Check if Ollama is running and model is available."""
@@ -49,10 +60,11 @@ IMPORTANT: Do NOT wrap your response in <think> tags or show internal reasoning.
                 resp = await client.get(f"{self.base_url}/api/tags")
                 if resp.status_code == 200:
                     models = [m["name"] for m in resp.json().get("models", [])]
-                    self._available = any(self.model in m for m in models)
+                    # We match partially because Ollama might have tags like model:latest
+                    self._available = any(self.model in m or m.startswith(self.model) for m in models)
                     return self._available
         except Exception as e:
-            print(f"⚠️ Ollama connection check failed: {e}")
+            logger.warning(f"Ollama connection check failed: {e}")
         self._available = False
         return False
 
@@ -92,10 +104,10 @@ IMPORTANT: Do NOT wrap your response in <think> tags or show internal reasoning.
         chat_history: Optional[list[dict]] = None,
         context: Optional[str] = None,
     ) -> str:
-        """Generate a response from Qwen via Ollama."""
+        """Generate a response from the designated Ollama model."""
         if not await self._check_available():
             return (
-                "⚠️ **Ollama not available**\n\n"
+                "⚠️ **Ollama not available or model not found**\n\n"
                 f"Make sure Ollama is running and the model `{self.model}` is pulled.\n\n"
                 f"**To start Ollama:**\n"
                 f"```bash\nollama serve\n```\n\n"
@@ -124,7 +136,7 @@ IMPORTANT: Do NOT wrap your response in <think> tags or show internal reasoning.
         except httpx.ConnectError:
             return f"⚠️ **Cannot connect to Ollama** at {self.base_url}\n\nMake sure Ollama is running: `ollama serve`"
         except httpx.TimeoutException:
-            return "⚠️ **Request timed out** — Qwen is taking too long to respond. The model may still be loading."
+            return f"⚠️ **Request timed out** — {self.model} is taking too long to respond. The model may still be loading."
         except Exception as e:
             return f"⚠️ **Ollama error:** {type(e).__name__}: {str(e)}"
 
@@ -134,10 +146,10 @@ IMPORTANT: Do NOT wrap your response in <think> tags or show internal reasoning.
         chat_history: Optional[list[dict]] = None,
         context: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
-        """Stream a response from Qwen via Ollama."""
+        """Stream a response from the designated Ollama model."""
         if not await self._check_available():
             yield (
-                f"⚠️ **Ollama not available**\n\n"
+                f"⚠️ **Ollama model '{self.model}' not available**\n\n"
                 f"Run `ollama serve` and `ollama pull {self.model}`"
             )
             return
@@ -241,22 +253,32 @@ Provide:
         return await self.generate_response(prompt)
 
 
-# Singleton instances
-_qwen_service: Optional[QwenService] = None
-_qwen_cloud_service: Optional[QwenService] = None
+# Factory and Singleton storage
+_services: dict[str, OllamaService] = {}
 
+def get_ollama_service(provider_key: str) -> OllamaService:
+    """Get the persistent OllamaService instance for a specified provider."""
+    global _services
+    if provider_key not in _services:
+        _services[provider_key] = OllamaService(provider_key)
+    return _services[provider_key]
 
-def get_qwen_service() -> QwenService:
-    """Get or create the Qwen service instance."""
-    global _qwen_service
-    if _qwen_service is None:
-        _qwen_service = QwenService()
-    return _qwen_service
+def is_ollama_provider(provider_key: str) -> bool:
+    """Check if the provided key targets an Ollama model."""
+    return provider_key in MODEL_MAPPING
 
+def get_ollama_langchain_model(provider_key: str, context_size: int = 0):
+    """Factory to get LangChain's ChatOllama model for Agent usage."""
+    from langchain_ollama import ChatOllama
+    
+    model_name = MODEL_MAPPING.get(provider_key)
+    if not model_name:
+        raise ValueError(f"Unknown Ollama provider key: {provider_key}")
 
-def get_qwen_cloud_service() -> QwenService:
-    """Get or create the Qwen 3.5 397B Cloud service instance."""
-    global _qwen_cloud_service
-    if _qwen_cloud_service is None:
-        _qwen_cloud_service = QwenService(model="qwen3.5:397b-cloud")
-    return _qwen_cloud_service
+    logger.info(f"Agent using {provider_key} (model: {model_name}) via Ollama (context ~{context_size} tokens)")
+    
+    return ChatOllama(
+        model=model_name,
+        temperature=0,
+        base_url=OLLAMA_BASE_URL,
+    )

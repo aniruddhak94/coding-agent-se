@@ -15,6 +15,7 @@ import os
 from typing import Optional, List, Annotated, TypedDict, AsyncGenerator, Dict, Any
 import json
 from pathlib import Path
+import difflib
 
 from dotenv import load_dotenv
 
@@ -47,19 +48,29 @@ AGENT_SYSTEM_PROMPT = """You are ICA (Intelligent Coding Agent), a powerful AI c
 - Be concise but comprehensive. Acknowledge what you found, explain your reasoning, and summarize actions taken.
 - If you're unsure, say so — never guess about the codebase structure.
 
-## Available Tools (8 tools)
+## Available Tools (16 tools)
 
 ### Exploration Tools
 - **list_files(path)** — List directory contents. Always start here.
 - **read_file(path)** — Read an entire file's content.
 - **read_file_lines(path, start_line, end_line)** — Read specific line range from a file. Use for large files.
-- **search_code(pattern, path)** — Search for a text pattern across all files (like grep). Returns matching lines with file paths and line numbers.
+- **search_code(pattern, path)** — Search for a text pattern across all files (like grep).
 - **find_files(pattern)** — Find files by name pattern (like find). Supports glob patterns like "*.py" or "test_*".
+- **get_git_status()** — Run `git status` to see what changed.
 
 ### Modification Tools
-- **write_file(path, content)** — Create or overwrite a file. Always provide COMPLETE file content.
+- **write_file(path, content)** — Create or overwrite a complete file.
+- **patch_file(path, old_text, new_text)** — Targeted string replacement in a file (avoids rewriting large files).
+- **append_to_file(path, content)** — Append lines to the end of a file.
+- **search_and_replace(path, search, replace)** — Replace all occurrences of a string.
 - **delete_file(path)** — Delete a file or directory.
+- **move_file(from_path, to_path)** — Rename or relocate a file/directory.
+- **make_directory(path)** — Create a directory (`mkdir -p`).
+
+### Execution Tools
 - **run_command(command)** — Run a shell command inside the container.
+- **install_package(manager, packages)** — Wrapper for `npm install X` or `pip install X`.
+- **run_tests(command)** — Run test suite with a 60s timeout.
 
 ## Agentic Workflow — Think Step by Step
 
@@ -91,7 +102,6 @@ You MUST follow this chain of thought for every request:
 - **Use search_code** to find things instead of reading every file manually.
 - **If a file is not in the root directory, IMMEDIATELY call find_files('filename') to locate it.**
 - **Your final message MUST be text** — a comprehensive summary with no tool calls.
-- **Complete files only** when using `write_file`.
 - **Do NOT use `<think>` tags.** Respond directly."""
 
 
@@ -262,7 +272,96 @@ def create_workspace_tools(workspace_service: WorkspaceService, workspace_id: in
         except Exception as e:
             return f"[Error: {e}]"
 
-    return [read_file, read_file_lines, list_files, search_code, find_files, write_file, delete_file, run_command]
+    # ── Tool 9: Patch File ──
+    @tool
+    async def patch_file(path: str, old_text: str, new_text: str) -> str:
+        """Replace a specific block of text in a file. 'old_text' must match exactly the text to be replaced."""
+        try:
+            file_data = await workspace_service.read_file(workspace_id, user_id, path)
+            content = file_data.get("content", "")
+            if old_text not in content:
+                return f"[Error: 'old_text' not found in {path}. Make sure the indentation and whitespace match exactly.]"
+            if content.count(old_text) > 1:
+                return f"[Error: 'old_text' appears multiple times in {path}. Please provide a larger, unique block of text to replace.]"
+            
+            new_content = content.replace(old_text, new_text)
+            await workspace_service.write_file(workspace_id, user_id, path, new_content)
+            return f"✅ Successfully patched '{path}'"
+        except Exception as e:
+            return f"[Error patching {path}: {e}]"
+
+    # ── Tool 10: Append to File ──
+    @tool
+    async def append_to_file(path: str, content: str) -> str:
+        """Append text to the end of a file. Automatically adds a newline if needed."""
+        try:
+            file_data = await workspace_service.read_file(workspace_id, user_id, path)
+            old_content = file_data.get("content", "")
+            if old_content and not old_content.endswith('\\n'):
+                old_content += '\\n'
+            new_content = old_content + content
+            await workspace_service.write_file(workspace_id, user_id, path, new_content)
+            return f"✅ Successfully appended to '{path}'"
+        except Exception as e:
+            return f"[Error appending to {path}: {e}]"
+
+    # ── Tool 11: Move File ──
+    @tool
+    async def move_file(from_path: str, to_path: str) -> str:
+        """Move or rename a file or directory."""
+        return await _exec_in_container(f"mv '/workspace/{from_path}' '/workspace/{to_path}'")
+
+    # ── Tool 12: Make Directory ──
+    @tool
+    async def make_directory(path: str) -> str:
+        """Create a directory, including all necessary parent directories."""
+        return await _exec_in_container(f"mkdir -p '/workspace/{path}'")
+
+    # ── Tool 13: Get Git Status ──
+    @tool
+    async def get_git_status() -> str:
+        """Get the current git status of the workspace (modified files, untracked files, etc)."""
+        return await _exec_in_container("git status")
+
+    # ── Tool 14: Install Package ──
+    @tool
+    async def install_package(manager: str, packages: str) -> str:
+        """Install dependencies. 'manager' should be 'npm', 'pip', 'yarn', 'pnpm', or 'apt'. 'packages' is space-separated."""
+        if manager not in ['npm', 'pip', 'yarn', 'pnpm', 'apt', 'apt-get']:
+            return f"[Error: unsupported package manager '{manager}']"
+        cmd = ""
+        if manager == "npm": cmd = f"npm install {packages}"
+        elif manager == "yarn": cmd = f"yarn add {packages}"
+        elif manager == "pnpm": cmd = f"pnpm install {packages}"
+        elif manager == "pip": cmd = f"pip install {packages}"
+        elif manager in ["apt", "apt-get"]: cmd = f"apt-get update && apt-get install -y {packages}"
+        return await _exec_in_container(cmd)
+
+    # ── Tool 15: Run Tests ──
+    @tool
+    async def run_tests(command: str) -> str:
+        """Run tests. If they hang, this will timeout after 60s."""
+        return await _exec_in_container(command, timeout=60)
+
+    # ── Tool 16: Search and Replace ──
+    @tool
+    async def search_and_replace(path: str, search: str, replace: str) -> str:
+        """Surgical string replacement. Replaces ALL occurrences of 'search' with 'replace' in the file."""
+        try:
+            file_data = await workspace_service.read_file(workspace_id, user_id, path)
+            content = file_data.get("content", "")
+            if search not in content:
+                return f"[Error: '{search}' not found in {path}]"
+            new_content = content.replace(search, replace)
+            await workspace_service.write_file(workspace_id, user_id, path, new_content)
+            return f"✅ Successfully replaced text in '{path}'"
+        except Exception as e:
+            return f"[Error replacing in {path}: {e}]"
+
+    return [
+        read_file, read_file_lines, list_files, search_code, find_files, write_file, delete_file, run_command,
+        patch_file, append_to_file, move_file, make_directory, get_git_status, install_package, run_tests, search_and_replace
+    ]
 
 
 # ── LangGraph Agent Service ──────────────────────────────────────
@@ -270,7 +369,7 @@ def create_workspace_tools(workspace_service: WorkspaceService, workspace_id: in
 class AgentService:
     """LangGraph-based iterative AI agent for workspace operations."""
 
-    MAX_ITERATIONS = 20  # Safety limit (raised from 15 — more tools = more iterations)
+    MAX_ITERATIONS = 30  # Safety limit (raised from 20 — more tools = more iterations)
 
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -322,51 +421,20 @@ class AgentService:
                 logger.error(f"HuggingFace {display_name} failed: {e}")
                 raise RuntimeError(f"HuggingFace {display_name} unavailable: {e}")
         
-        # ── Gemma4 (Ollama — local) ──
-        if provider == "gemma4":
+        # ── Ollama Models (Local & Cloud) ──
+        # Provide fallback logic: if auto and token count > 1500, use qwen
+        effective_provider = "qwen" if (provider == "auto" and context_size > GEMINI_TOKEN_THRESHOLD) else provider
+        
+        from app.services.ollama_service import is_ollama_provider, get_ollama_langchain_model
+        
+        if is_ollama_provider(effective_provider):
             try:
-                from langchain_ollama import ChatOllama
-                logger.info(f"Agent using Gemma4 (context ~{context_size} tokens)")
-                return ChatOllama(
-                    model="gemma4:latest",
-                    temperature=0,
-                    base_url="http://localhost:11434",
-                ), "gemma4"
+                model = get_ollama_langchain_model(effective_provider, context_size)
+                return model, effective_provider
             except Exception as e:
-                logger.warning(f"Gemma4 unavailable: {e}, falling back to Gemini")
+                logger.warning(f"Ollama provider '{effective_provider}' unavailable: {e}, falling back to Gemini")
 
-        # ── Qwen 3.5 397B (Ollama — cloud) ──
-        if provider == "qwen-cloud":
-            try:
-                from langchain_ollama import ChatOllama
-                logger.info(f"Agent using Qwen 3.5 397B Cloud (context ~{context_size} tokens)")
-                return ChatOllama(
-                    model="qwen3.5:397b-cloud",
-                    temperature=0,
-                    base_url="http://localhost:11434",
-                ), "qwen-cloud"
-            except Exception as e:
-                logger.warning(f"Qwen Cloud unavailable: {e}, falling back to Gemini")
-
-        # ── Qwen (Ollama — local) ──
-        use_qwen = (
-            provider == "qwen" or
-            (provider == "auto" and context_size > GEMINI_TOKEN_THRESHOLD)
-        )
-
-        if use_qwen:
-            try:
-                from langchain_ollama import ChatOllama
-                logger.info(f"Agent using Qwen 3.5 (context ~{context_size} tokens)")
-                return ChatOllama(
-                    model="qwen3.5:9b",
-                    temperature=0,
-                    base_url="http://localhost:11434",
-                ), "qwen"
-            except Exception as e:
-                logger.warning(f"Qwen unavailable: {e}, falling back to Gemini")
-
-        # ── Gemini (fallback) ──
+        # ── Gemini (fallback/default) ──
         try:
             from langchain_google_genai import ChatGoogleGenerativeAI
             api_key = os.getenv("GEMINI_API_KEY", "")
@@ -631,18 +699,16 @@ class AgentService:
         repeat_content_count = 0
         MAX_REPEAT_CONTENT = 2  # If the agent emits the same text twice, break the loop
 
+        import asyncio
+
         try:
             while iteration_count < self.MAX_ITERATIONS:
                 iteration_count += 1
+                full_content = ""
                 logger.info(f"Agent streaming iteration {iteration_count}/{self.MAX_ITERATIONS}")
 
-                # ── Use standard invoke instead of manual token streaming for stability ──
-                # Manual token streaming with tool calls is notoriously unstable across 
-                # different providers (Gemini vs HuggingFace vs Ollama).
-                # We will yield a status, await the full response, then stream the result.
                 yield {"type": "status", "status": f"thinking (step {iteration_count})"}
                 
-                import asyncio
                 try:
                     response_msg = await model_with_tools.ainvoke(messages)
                 except Exception as e:
@@ -655,20 +721,15 @@ class AgentService:
                     full_content = "".join(str(c) for c in full_content)
                 full_content = _clean_think_tags(full_content)
 
-                # Emit the cleaned text token by token for the frontend UX
-                if full_content:
-                    # Optional: chunk the text artificially for smooth UI streaming
-                    words = full_content.split(" ")
-                    for word in words:
-                        yield {"type": "token", "content": word + " "}
-                        await asyncio.sleep(0.01) # Small delay for UI effect
-
                 messages.append(response_msg)
                 
-                # Extract reliable tool calls from the completed message
+                # Extract tool calls from the completed message
                 parsed_tool_calls = response_msg.tool_calls or []
 
-                # ── If tool calls, execute them ──
+                # ── If tool calls, execute them but DO NOT stream text yet ──
+                # This is the key fix: intermediate text (before tools) is NOT
+                # streamed to the frontend. Only the FINAL text response (with
+                # no tool calls) gets streamed. This prevents duplication.
                 if parsed_tool_calls:
                     for tc in parsed_tool_calls:
                         tool_name = tc.get("name", "unknown")
@@ -676,10 +737,17 @@ class AgentService:
                         tool_id = tc.get("id") or f"call_{tool_name}_{iteration_count}"
                         tools_used.add(tool_name)
 
+                        # Validate tool_args is a dict (some cloud models send strings)
+                        if not isinstance(tool_args, dict):
+                            try:
+                                tool_args = json.loads(str(tool_args))
+                            except (json.JSONDecodeError, TypeError):
+                                tool_args = {"input": str(tool_args)}
+
                         yield {
                             "type": "tool_start",
                             "name": tool_name,
-                            "args": tool_args if isinstance(tool_args, dict) else {"input": str(tool_args)},
+                            "args": tool_args,
                         }
 
                         # Execute the tool
@@ -710,19 +778,31 @@ class AgentService:
                             tool_call_id=tool_id,
                         ))
 
-                        # Collect modification actions for accept/reject
-                        if tool_name in ("write_file", "delete_file", "run_command"):
+                        # Collect modification actions to trigger editor refreshes
+                        # Include old and newly added tools
+                        if tool_name in ("write_file", "patch_file", "append_to_file", "search_and_replace", "delete_file", "move_file", "make_directory", "run_command"):
                             action_type = {
                                 "write_file": "file_edit",
+                                "patch_file": "file_edit",
+                                "append_to_file": "file_edit",
+                                "search_and_replace": "file_edit",
                                 "delete_file": "file_delete",
+                                "move_file": "file_edit",
+                                "make_directory": "file_create",
                                 "run_command": "run_command",
                             }[tool_name]
+                            
+                            # Handle different path argument names (e.g. from_path for move_file)
+                            action_path = None
+                            if isinstance(tool_args, dict):
+                                action_path = tool_args.get("path") or tool_args.get("to_path") or tool_args.get("from_path")
+                                
                             collected_actions.append(AgentAction(
                                 type=action_type,
-                                path=tool_args.get("path") if isinstance(tool_args, dict) else None,
+                                path=action_path,
                                 content=tool_args.get("content") if isinstance(tool_args, dict) else None,
                                 command=tool_args.get("command") if isinstance(tool_args, dict) else None,
-                                description=f"{tool_name}: {tool_args.get('path') or tool_args.get('command', '') if isinstance(tool_args, dict) else ''}"
+                                description=f"{tool_name}: {action_path or tool_args.get('command', '') if isinstance(tool_args, dict) else ''}"
                             ))
 
                     # Continue to next iteration (agent sees tool results)
@@ -731,12 +811,15 @@ class AgentService:
                 # ── Evaluate Nudges ONLY if no tools were called ──
                 content_lower = full_content.lower()
                 has_explored = bool(tools_used & EXPLORATION_TOOLS)
+                has_used_any_tool = bool(tools_used)
 
-                # Are they trying to stop without doing anything?
+                # Only nudge if agent used NO tools at all AND gave a suspiciously short answer
                 is_premature_stop = (
+                    not has_used_any_tool and
                     not has_explored and 
                     nudge_count < MAX_NUDGES and 
                     iteration_count < self.MAX_ITERATIONS - 1
+                    and len(full_content.strip()) < 300
                 )
                 
                 # Are they promising to do something but outputting raw text instead of a tool call?
@@ -757,11 +840,34 @@ class AgentService:
                     yield {"type": "status", "status": "nudging"}
                     continue
 
+                # ── No tool calls, No nudges: this is the FINAL text response ──
+                # NOW stream the text to the frontend (only once, no duplicates)
+                if full_content:
+                    # Dedup check: if model repeats itself or paraphrases, break
+                    is_duplicate = False
+                    if last_full_content:
+                        similarity = difflib.SequenceMatcher(None, full_content, last_full_content).ratio()
+                        if similarity > 0.85:
+                            is_duplicate = True
+                            
+                    if is_duplicate:
+                        repeat_content_count += 1
+                        if repeat_content_count >= MAX_REPEAT_CONTENT:
+                            logger.warning(f"Agent repeating similar text (similarity). Breaking loop.")
+                            break
+                    else:
+                        last_full_content = full_content
+                        repeat_content_count = 0
+                        words = full_content.split(" ")
+                        for word in words:
+                            yield {"type": "token", "content": word + " "}
+                            await asyncio.sleep(0.01)
+
                 # ── Agent finished (no tool calls, no nudge) ──
                 break
 
             # If the agent didn't produce a proper text summary, force one more call
-            if not full_content.strip() or full_content.startswith("Here's what I found:"):
+            if not last_full_content.strip():
                 try:
                     logger.info("Agent didn't produce summary in stream — forcing summary call")
                     summary_messages = messages + [

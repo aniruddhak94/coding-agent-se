@@ -13,8 +13,7 @@ from app.schemas.chat import (
     CodeResponse,
 )
 from app.services.gemini_service import get_gemini_service
-from app.services.qwen_service import get_qwen_service, get_qwen_cloud_service
-from app.services.gemma_service import get_gemma_service
+from app.services.ollama_service import get_ollama_service, is_ollama_provider
 from app.services.rag_service import RAGService
 from app.core.database import get_db
 
@@ -39,21 +38,17 @@ async def get_rag_context(
     return context_response.context if context_response.context else None
 
 
-def get_ai_service(provider: str = "gemini"):
+def get_ai_service(provider: str = "qwen-cloud"):
     """Get the appropriate AI service based on provider."""
-    if provider == "qwen":
-        return get_qwen_service()
-    if provider == "qwen-cloud":
-        return get_qwen_cloud_service()
-    if provider == "gemma4":
-        return get_gemma_service()
+    if is_ollama_provider(provider):
+        return get_ollama_service(provider)
     return get_gemini_service()
 
 
 @router.post("/message", response_model=ChatResponse)
 async def send_message(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     """Send a message and get AI response with optional RAG context."""
-    ai_service = get_ai_service(request.provider or "gemini")
+    ai_service = get_ai_service(request.provider or "qwen-cloud")
     
     # Convert history to dict format
     history = None
@@ -80,7 +75,7 @@ async def send_message(request: ChatRequest, db: AsyncSession = Depends(get_db))
 @router.post("/stream")
 async def stream_message(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     """Stream AI response for a message with optional RAG context."""
-    ai_service = get_ai_service(request.provider or "gemini")
+    ai_service = get_ai_service(request.provider or "qwen-cloud")
     
     # Convert history to dict format
     history = None

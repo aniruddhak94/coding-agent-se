@@ -34,6 +34,7 @@ export default function ChatInterface() {
     const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES);
     const [input, setInput] = useState("");
     const [isLoading, setIsLoading] = useState(false);
+    const isLoadingRef = useRef(false);
     const [streamingContent, setStreamingContent] = useState("");
     const [sessionId, setSessionId] = useState<string | null>(null);
     const useStreaming = false;
@@ -41,7 +42,8 @@ export default function ChatInterface() {
     const [selectedRepoId, setSelectedRepoId] = useState<number | null>(null);
     const [uploadedFiles, setUploadedFiles] = useState<{ name: string, status: 'uploading' | 'success' | 'error' }[]>([]);
     const [showRepoDropdown, setShowRepoDropdown] = useState(false);
-    const [provider, setProvider] = useState<"gemini" | "qwen" | "qwen-cloud" | "gemma4">("gemini");
+    const [planMode, setPlanMode] = useState(false);
+    const [provider, setProvider] = useState<"gemini" | "qwen" | "qwen-cloud" | "gemma4" | "gpt-oss-cloud" | "kimi-cloud" | "minimax-cloud">("qwen-cloud");
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -109,7 +111,7 @@ export default function ChatInterface() {
         // Set and submit
         setInput(q);
         setTimeout(() => {
-            const syntheticEvent = { preventDefault: () => {} } as React.FormEvent;
+            const syntheticEvent = { preventDefault: () => { } } as React.FormEvent;
             // Trigger via direct call to avoid stale closure
             const userMessage: Message = {
                 id: Date.now().toString(),
@@ -120,6 +122,7 @@ export default function ChatInterface() {
             setMessages(prev => [...prev, userMessage]);
             setInput("");
             setIsLoading(true);
+            isLoadingRef.current = true;
             setStreamingContent("");
             const history: ApiChatMessage[] = INITIAL_MESSAGES.slice(-10).map(msg => ({
                 role: msg.role,
@@ -135,9 +138,13 @@ export default function ChatInterface() {
                     const errMsg: Message = { id: (Date.now() + 1).toString(), role: "assistant", content: `⚠️ Error: ${err?.message || "Unknown error"}`, timestamp: new Date() };
                     setMessages(prev => [...prev, errMsg]);
                 })
-                .finally(() => { setIsLoading(false); setStreamingContent(""); });
+                .finally(() => { 
+                    setIsLoading(false); 
+                    isLoadingRef.current = false;
+                    setStreamingContent(""); 
+                });
         }, 100);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -181,7 +188,7 @@ export default function ChatInterface() {
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!input.trim() || isLoading) return;
+        if (!input.trim() || isLoadingRef.current) return;
 
         const userMessage: Message = {
             id: Date.now().toString(),
@@ -194,6 +201,7 @@ export default function ChatInterface() {
         const currentInput = input.trim();
         setInput("");
         setIsLoading(true);
+        isLoadingRef.current = true;
         setStreamingContent("");
 
         const history: ApiChatMessage[] = messages.slice(-10).map((msg) => ({
@@ -212,6 +220,7 @@ export default function ChatInterface() {
                         setMessages((prev) => [...prev, aiMessage]);
                         setStreamingContent("");
                         setIsLoading(false);
+                        isLoadingRef.current = false;
                     },
                     (error) => { console.error("Streaming error:", error); handleNonStreamingResponse(currentInput, history); }
                 );
@@ -227,6 +236,7 @@ export default function ChatInterface() {
             };
             setMessages((prev) => [...prev, errorMessage]);
             setIsLoading(false);
+            isLoadingRef.current = false;
         }
     };
 
@@ -251,6 +261,7 @@ export default function ChatInterface() {
             throw error;
         } finally {
             setIsLoading(false);
+            isLoadingRef.current = false;
         }
     };
 
@@ -319,22 +330,24 @@ export default function ChatInterface() {
                     <div className="relative">
                         <select
                             value={provider}
-                            onChange={(e) => setProvider(e.target.value as "gemini" | "qwen" | "qwen-cloud" | "gemma4")}
-                            className={`appearance-none cursor-pointer px-3 py-1.5 pr-7 rounded-lg text-xs font-medium transition-all duration-200 border focus:outline-none ${
-                                provider === "gemini"
+                            onChange={(e) => setProvider(e.target.value as "gemini" | "qwen" | "qwen-cloud" | "gemma4" | "gpt-oss-cloud" | "kimi-cloud" | "minimax-cloud")}
+                            className={`appearance-none cursor-pointer px-3 py-1.5 pr-7 rounded-lg text-xs font-medium transition-all duration-200 border focus:outline-none ${provider === "gemini"
                                     ? "bg-[#2EFF7B]/10 text-[#2EFF7B] border-[#2EFF7B]/30 hover:bg-[#2EFF7B]/20"
                                     : provider === "gemma4"
-                                    ? "bg-blue-500/10 text-blue-400 border-blue-500/30 hover:bg-blue-500/20"
-                                    : provider === "qwen-cloud"
-                                    ? "bg-orange-500/10 text-orange-400 border-orange-500/30 hover:bg-orange-500/20"
-                                    : "bg-purple-500/10 text-purple-400 border-purple-500/30 hover:bg-purple-500/20"
-                            }`}
+                                        ? "bg-blue-500/10 text-blue-400 border-blue-500/30 hover:bg-blue-500/20"
+                                        : provider.endsWith("-cloud")
+                                            ? "bg-orange-500/10 text-orange-400 border-orange-500/30 hover:bg-orange-500/20"
+                                            : "bg-purple-500/10 text-purple-400 border-purple-500/30 hover:bg-purple-500/20"
+                                }`}
                             aria-label="AI model"
                         >
                             <option value="gemini">✦ Gemini</option>
                             <option value="gemma4">◆ Gemma 4 (Local)</option>
                             <option value="qwen">■ Qwen 3.5 (Local)</option>
                             <option value="qwen-cloud">☁ Qwen 397B (Cloud)</option>
+                            <option value="gpt-oss-cloud">☁ GPT-OSS 120B (Cloud)</option>
+                            <option value="kimi-cloud">☁ Kimi k2.5 (Cloud)</option>
+                            <option value="minimax-cloud">☁ MiniMax m2.7 (Cloud)</option>
                         </select>
                         <svg className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 text-[#5A7268]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -374,54 +387,72 @@ export default function ChatInterface() {
             </div>
 
             {/* Input */}
-            <div className="border-t border-[#1F2D28] p-4 bg-[#111917]">
-                {uploadedFiles.length > 0 && (
-                    <div className="mb-3 flex flex-wrap gap-2">
-                        {uploadedFiles.map((file, idx) => (
-                            <span key={idx} className={`text-xs px-2 py-1 rounded-lg ${file.status === 'success' ? 'bg-[#2EFF7B]/10 text-[#2EFF7B] border border-[#2EFF7B]/30' : file.status === 'error' ? 'bg-red-500/10 text-red-400 border border-red-500/30' : 'bg-[#1A2420] text-[#8FAEA2]'}`}>
-                                {file.status === 'uploading' ? '⏳' : file.status === 'success' ? '✓' : '✕'} {file.name}
-                            </span>
-                        ))}
-                        <button onClick={() => setUploadedFiles([])} className="text-xs text-[#5A7268] hover:text-red-400">Clear</button>
-                    </div>
-                )}
+            <div className="shrink-0 p-4 border-t border-[#1F2D28] bg-[#111917]">
+                <div className="flex flex-col bg-[#1A2420] border border-[#1F2D28] rounded-2xl p-2 shadow-sm focus-within:border-[#2EFF7B]/50 transition-colors">
+                    {uploadedFiles.length > 0 && (
+                        <div className="mb-2 flex flex-wrap gap-2 px-2 pt-1">
+                            {uploadedFiles.map((file, idx) => (
+                                <span key={idx} className={`text-xs px-2 py-1 rounded-lg ${file.status === 'success' ? 'bg-[#2EFF7B]/10 text-[#2EFF7B] border border-[#2EFF7B]/30' : file.status === 'error' ? 'bg-red-500/10 text-red-400 border border-red-500/30' : 'bg-[#1A2420] text-[#8FAEA2] border border-[#1F2D28]'}`}>
+                                    {file.status === 'uploading' ? '⏳' : file.status === 'success' ? '✓' : '✕'} {file.name}
+                                </span>
+                            ))}
+                            <button onClick={() => setUploadedFiles([])} className="text-xs text-[#5A7268] hover:text-red-400">Clear</button>
+                        </div>
+                    )}
+                    <form onSubmit={handleSubmit} className="flex flex-col">
+                        <textarea
+                            ref={inputRef}
+                            value={input}
+                            onChange={(e) => setInput(e.target.value)}
+                            onKeyDown={handleKeyDown}
+                            placeholder="Ask me anything about code..."
+                            rows={1}
+                            className="w-full bg-transparent px-3 py-2 text-sm text-[#E6F1EC] placeholder-[#5A7268] focus:outline-none resize-none"
+                            style={{ maxHeight: '200px' }}
+                        />
+                        <div className="flex justify-between items-center px-1 mt-1">
+                            <div className="flex items-center gap-1">
+                                <input ref={fileInputRef} type="file" multiple onChange={handleFileUpload} className="hidden" accept=".py,.js,.ts,.tsx,.jsx,.java,.cpp,.c,.go,.rs,.md,.json,.pdf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.svg,.bmp,.txt" />
+                                <button
+                                    type="button"
+                                    onClick={() => fileInputRef.current?.click()}
+                                    className="p-2 text-[#5A7268] hover:text-[#8FAEA2] rounded-lg transition-colors"
+                                    title="Attach files"
+                                >
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                                </button>
+                            </div>
+                            <div className="flex items-center gap-3">
+                                <label className="flex items-center gap-2 cursor-pointer group">
+                                    <div className="relative flex items-center">
+                                        <input type="checkbox" className="sr-only" checked={planMode} onChange={(e) => setPlanMode(e.target.checked)} />
+                                        <div className={`block w-9 h-5 rounded-full transition-colors ${planMode ? 'bg-[#2EFF7B]/20' : 'bg-[#111917] border border-[#1F2D28]'}`}></div>
+                                        <div className={`absolute left-1 top-1 w-3 h-3 rounded-full transition-transform ${planMode ? 'translate-x-4 bg-[#2EFF7B]' : 'bg-[#5A7268] group-hover:bg-[#8FAEA2]'}`}></div>
+                                    </div>
+                                    <span className={`text-xs transition-colors ${planMode ? 'text-[#2EFF7B]' : 'text-[#5A7268] group-hover:text-[#8FAEA2]'}`}>Plan</span>
+                                </label>
 
-                <form onSubmit={handleSubmit} className="relative">
-                    <textarea
-                        ref={inputRef}
-                        value={input}
-                        onChange={(e) => setInput(e.target.value)}
-                        onKeyDown={handleKeyDown}
-                        placeholder="Ask me anything about code..."
-                        rows={2}
-                        className="w-full bg-[#1A2420] text-[#E6F1EC] placeholder-[#5A7268] rounded-xl px-4 py-3 pr-14 resize-none border border-[#1F2D28] focus:border-[#2EFF7B] focus:outline-none transition-colors"
-                    />
-                    <button
-                        type="submit"
-                        disabled={!input.trim() || isLoading}
-                        className="absolute right-3 bottom-3 p-2.5 bg-[#2EFF7B] hover:bg-[#1ED760] disabled:bg-[#1A2420] disabled:text-[#5A7268] text-[#0B0F0E] disabled:cursor-not-allowed rounded-xl transition-colors"
-                    >
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                        </svg>
-                    </button>
-                </form>
+                                <button
+                                    type="button"
+                                    className="p-1.5 text-[#5A7268] hover:text-[#8FAEA2] rounded-lg transition-colors ml-1"
+                                    aria-label="Expand"
+                                >
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6"></path><path d="M9 21H3v-6"></path><path d="M21 3l-7 7"></path><path d="M3 21l7-7"></path></svg>
+                                </button>
 
-                <div className="flex items-center justify-between mt-3">
-                    <div className="flex items-center gap-4">
-                        <input ref={fileInputRef} type="file" multiple onChange={handleFileUpload} className="hidden" accept=".py,.js,.ts,.tsx,.jsx,.java,.cpp,.c,.go,.rs,.md,.json,.pdf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.svg,.bmp,.txt" />
-                        <button
-                            type="button"
-                            onClick={() => fileInputRef.current?.click()}
-                            className="flex items-center gap-1.5 text-xs text-[#8FAEA2] hover:text-[#2EFF7B] transition-colors"
-                        >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                            </svg>
-                            Attach files
-                        </button>
-                        <span className="text-xs text-[#5A7268]">ICA may produce inaccurate information.</span>
-                    </div>
+                                <button
+                                    type="submit"
+                                    disabled={!input.trim() || isLoading}
+                                    className="p-2 ml-1 bg-[#2EFF7B] text-[#0B0F0E] rounded-lg hover:bg-[#1ED760] disabled:opacity-50 disabled:bg-[#1A2420] disabled:text-[#5A7268] transition-colors"
+                                >
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
+                                </button>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div className="text-center mt-2 pointer-events-auto">
+                    <span className="text-[10px] text-[#5A7268]">ICA may produce inaccurate information.</span>
                 </div>
             </div>
         </div>

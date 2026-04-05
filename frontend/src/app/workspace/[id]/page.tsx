@@ -390,6 +390,44 @@ export default function WorkspacePage() {
         }
     };
 
+    const handleFileChanged = useCallback(async (changedPaths?: string[]) => {
+        fetchFiles('.');
+
+        if (changedPaths && changedPaths.length > 0) {
+            const updatedFiles: Record<string, OpenFile> = {};
+            let hasUpdates = false;
+
+            for (const path of changedPaths) {
+                if (openFiles[path]) {
+                    try {
+                        const data = await apiClient.readWorkspaceFile(id, path);
+                        updatedFiles[path] = {
+                            ...openFiles[path],
+                            content: data.content,
+                            originalContent: data.content,
+                            language: data.language
+                        };
+                        hasUpdates = true;
+                    } catch (err: any) {
+                        console.error(`Failed to refresh file ${path}:`, err);
+                    }
+                }
+            }
+
+            if (hasUpdates) {
+                setOpenFiles(prev => {
+                    const next = { ...prev };
+                    for (const [path, file] of Object.entries(updatedFiles)) {
+                        if (next[path]) {
+                            next[path] = file;
+                        }
+                    }
+                    return next;
+                });
+            }
+        }
+    }, [id, fetchFiles, openFiles]);
+
     // --- Render Helpers ---
 
     const tabs: EditorTab[] = Object.values(openFiles).map(f => ({
@@ -644,7 +682,7 @@ export default function WorkspacePage() {
                                             isVisible={showAI}
                                             activeFilePath={activePath}
                                             openFilePaths={Object.keys(openFiles)}
-                                            onFileChanged={() => fetchFiles('.')}
+                                            onFileChanged={handleFileChanged}
                                         />
                                     </div>
                                 </>

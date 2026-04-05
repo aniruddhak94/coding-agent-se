@@ -14,7 +14,8 @@ class AgentRequest(BaseModel):
     provider: Optional[Literal[
         "auto", "gemini", "qwen", "qwen-cloud", "gemma4",
         "hf-qwen-7b", "hf-qwen-35b",
-        "hf-llama-8b", "hf-llama-70b"
+        "hf-llama-8b", "hf-llama-70b",
+        "gpt-oss-cloud", "kimi-cloud", "minimax-cloud"
     ]] = Field(
         default="auto",
         description="Model selection: auto, gemini, qwen, qwen-cloud, gemma4, or hf-* HuggingFace models."

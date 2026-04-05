@@ -362,12 +362,13 @@ class WorkspaceService:
         if parent_dir:
             await self._exec(workspace.container_id, f"mkdir -p {parent_dir}")
 
-        # Write file using heredoc via bash to handle multi-line content safely
-        # Escape content for shell
-        escaped = content.replace("\\", "\\\\").replace("'", "'\\''")
+        # Write file using base64 encoding to safely handle ANY content
+        # (heredoc + shell escaping breaks on code with quotes, backslashes, $, etc.)
+        import base64
+        encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
         await self._exec(
             workspace.container_id,
-            f"bash -c 'cat > {full_path} << '\\''ICARUNEOF'\\''\\n{escaped}\\nICARUNEOF'"
+            f"echo '{encoded}' | base64 -d > {full_path}"
         )
 
         # Verify write by checking file exists
@@ -390,10 +391,11 @@ class WorkspaceService:
             if parent:
                 await self._exec(workspace.container_id, f"mkdir -p {parent}")
             if content:
-                escaped = content.replace("\\", "\\\\").replace("'", "'\\''")
+                import base64
+                encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
                 await self._exec(
                     workspace.container_id,
-                    f"bash -c 'cat > {full_path} << '\\''ICARUNEOF'\\''\\n{escaped}\\nICARUNEOF'"
+                    f"echo '{encoded}' | base64 -d > {full_path}"
                 )
             else:
                 await self._exec(workspace.container_id, f"touch {full_path}")
