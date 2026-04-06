@@ -121,6 +121,14 @@ export default function DashboardPage() {
                                 >
                                     Go to Chat
                                 </Link>
+                                {user?.role === 'admin' && (
+                                    <Link
+                                        href="/admin"
+                                        className="px-6 py-2.5 bg-[#2EFF7B]/10 border border-[#2EFF7B]/30 text-[#2EFF7B] font-semibold rounded-xl hover:bg-[#2EFF7B]/20 transition-colors text-center text-sm"
+                                    >
+                                        ⚙️ Admin Panel
+                                    </Link>
+                                )}
                                 <button
                                     onClick={() => setShowLogoutConfirm(true)}
                                     className="px-6 py-2.5 bg-transparent border border-[#1F2D28] text-[#8FAEA2] font-medium rounded-xl hover:border-red-500/50 hover:text-red-400 transition-colors"
@@ -220,6 +228,24 @@ export default function DashboardPage() {
                                     <p className="text-sm text-[#5A7268]">Upload files and documents</p>
                                 </div>
                             </Link>
+
+                            {user?.role === 'admin' && (
+                                <Link
+                                    href="/admin"
+                                    className="flex items-center gap-3 p-4 bg-[#2EFF7B]/5 border border-[#2EFF7B]/20 rounded-xl hover:bg-[#2EFF7B]/10 hover:border-[#2EFF7B]/40 transition-colors group"
+                                >
+                                    <div className="w-10 h-10 bg-[#0B0F0E] rounded-lg flex items-center justify-center group-hover:bg-[#2EFF7B]/10 transition-colors">
+                                        <svg className="w-5 h-5 text-[#2EFF7B]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                        </svg>
+                                    </div>
+                                    <div>
+                                        <p className="font-medium text-[#2EFF7B]">Admin Panel</p>
+                                        <p className="text-sm text-[#4A7A60]">Users, stats &amp; logs</p>
+                                    </div>
+                                </Link>
+                            )}
 
                             <button
                                 onClick={() => setShowLogoutConfirm(true)}

@@ -14,6 +14,7 @@ from app.schemas.agent import (
     AgentApplyResponse,
 )
 from app.services.agent_service import AgentService
+from app.services.log_service import LogService, AGENT_RUN
 
 router = APIRouter(prefix="/agent", tags=["AI Agent"])
 
@@ -57,6 +58,13 @@ async def agent_stream(
       - {"type": "error", "message": "..."}
     """
     agent = AgentService(db)
+
+    # Log agent run (fire-and-forget style — don't block the stream)
+    await LogService(db).log(
+        action=AGENT_RUN,
+        user_id=current_user.id,
+        metadata={"workspace_id": request.workspace_id, "prompt_len": len(request.prompt or "")},
+    )
 
     async def event_generator():
         async for event in agent.stream_agent(

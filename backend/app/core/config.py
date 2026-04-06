@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     
     # Workspace
     workspace_base_image: str = "node:20-bookworm"
+
+    # Admin bootstrap — set ADMIN_EMAIL env var to auto-promote that user to ADMIN on login
+    admin_email: str = ""
     
     class Config:
         env_file = ".env"

@@ -12,6 +12,7 @@ from app.services.file_service import FileService
 from app.services.rag_service import RAGService
 from app.services.github_service import GitHubService
 from app.services.progress import update_progress, get_progress, clear_progress
+from app.services.log_service import LogService, REPO_CREATED
 from app.schemas.file import (
     RepositoryCreate,
     RepositoryImport,
@@ -55,7 +56,9 @@ async def create_repository(
     db.add(new_repo)
     await db.commit()
     await db.refresh(new_repo)
-    
+
+    await LogService(db).log(action=REPO_CREATED, user_id=current_user.id, metadata={"repo_id": new_repo.id, "name": new_repo.name})
+
     response = RepositoryResponse.model_validate(new_repo)
     response.file_count = 0
     return response
@@ -103,6 +106,8 @@ async def import_github_repository(
     db.add(new_repo)
     await db.commit()
     await db.refresh(new_repo)
+
+    await LogService(db).log(action=REPO_CREATED, user_id=current_user.id, metadata={"repo_id": new_repo.id, "name": repo_name, "source": "github"})
 
     # Fetch and index files in background
     async def fetch_and_index(repo_id: int, gh_owner: str, gh_repo: str, gh_branch: str, owner_id: int):

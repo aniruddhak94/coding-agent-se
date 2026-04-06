@@ -18,6 +18,7 @@ from app.services.workspace_service import WorkspaceService
 from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.models.user import User
+from app.services.log_service import LogService, WORKSPACE_CREATED
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/workspace", tags=["Workspace"])
@@ -40,6 +41,11 @@ async def create_workspace(
             repo_url=request.repo_url,
             repo_id=request.repo_id,
             name=request.name,
+        )
+        await LogService(db).log(
+            action=WORKSPACE_CREATED,
+            user_id=current_user.id,
+            metadata={"workspace_id": workspace.id, "name": workspace.name},
         )
         return WorkspaceResponse.model_validate(workspace)
     except (ValueError, RuntimeError) as e:
