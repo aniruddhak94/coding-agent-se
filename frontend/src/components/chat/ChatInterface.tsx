@@ -110,9 +110,8 @@ export default function ChatInterface() {
         router.replace("/chat", { scroll: false });
         // Set and submit
         setInput(q);
-        setTimeout(() => {
-            const syntheticEvent = { preventDefault: () => { } } as React.FormEvent;
-            // Trigger via direct call to avoid stale closure
+        const timeoutId = setTimeout(() => {
+            if (isLoadingRef.current) return; // Guard against Strict Mode double-fire
             const userMessage: Message = {
                 id: Date.now().toString(),
                 role: "user",
@@ -144,6 +143,7 @@ export default function ChatInterface() {
                     setStreamingContent(""); 
                 });
         }, 100);
+        return () => clearTimeout(timeoutId);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 

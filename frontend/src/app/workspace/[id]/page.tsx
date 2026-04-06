@@ -394,39 +394,29 @@ export default function WorkspacePage() {
         fetchFiles('.');
 
         if (changedPaths && changedPaths.length > 0) {
-            const updatedFiles: Record<string, OpenFile> = {};
-            let hasUpdates = false;
-
             for (const path of changedPaths) {
-                if (openFiles[path]) {
-                    try {
-                        const data = await apiClient.readWorkspaceFile(id, path);
-                        updatedFiles[path] = {
-                            ...openFiles[path],
-                            content: data.content,
-                            originalContent: data.content,
-                            language: data.language
+                try {
+                    const data = await apiClient.readWorkspaceFile(id, path);
+                    // Use updater pattern so we always check the LATEST openFiles state,
+                    // not a stale closure from when the SSE stream started
+                    setOpenFiles(prev => {
+                        if (!prev[path]) return prev; // file not open, nothing to refresh
+                        return {
+                            ...prev,
+                            [path]: {
+                                ...prev[path],
+                                content: data.content,
+                                originalContent: data.content,
+                                language: data.language
+                            }
                         };
-                        hasUpdates = true;
-                    } catch (err: any) {
-                        console.error(`Failed to refresh file ${path}:`, err);
-                    }
+                    });
+                } catch (err: any) {
+                    console.error(`Failed to refresh file ${path}:`, err);
                 }
             }
-
-            if (hasUpdates) {
-                setOpenFiles(prev => {
-                    const next = { ...prev };
-                    for (const [path, file] of Object.entries(updatedFiles)) {
-                        if (next[path]) {
-                            next[path] = file;
-                        }
-                    }
-                    return next;
-                });
-            }
         }
-    }, [id, fetchFiles, openFiles]);
+    }, [id, fetchFiles]);
 
     // --- Render Helpers ---
 

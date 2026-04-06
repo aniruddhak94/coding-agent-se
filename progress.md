@@ -17,12 +17,16 @@
 | **Phase 4C** | Terminal & Commands — Shell inside sandbox | ✅ Completed | WebSocket terminal via Docker exec, xterm.js UI, toggle panel |
 | **Phase 4D** | AI Agent in Sandbox — AI reads/writes/runs in workspace | ✅ Completed | Smart Qwen/Gemini routing, structured JSON actions, accept/reject flow, workspace chat panel | 
 | **Phase 4E** | Live Preview — See the app running | ✅ Completed | Host proxying, companion container, iframe preview, start/stop dev server |
-| **Phase 5** | Automation — Task definitions, Workflow execution, Scheduling | ❌ Not Started | Multi-step tasks, background execution, cron triggers |
-| **Phase 6** | Admin Panel — User management, Logs & monitoring, System settings | ❌ Not Started | User CRUD, system logs, config dashboard |
+| **Phase 5** | Admin Panel — User management, Logs & monitoring, System settings | ❌ Not Started | User CRUD, system logs, config dashboard |
+
+## Additional Features
+| Phase | Name | Status | Details |
+|-------|------|--------|---------|
+| **Automation** | Task definitions, Workflow execution, Scheduling | ❌ Not Started | Multi-step tasks, background execution, cron triggers |
 
 ---
 
-## Current Position: 🎯 Phase 5 — Automation
+## Current Position: 🎯 Phase 5 — Admin Panel
 
 ---
 

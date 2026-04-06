@@ -744,6 +744,28 @@ class AgentService:
                             except (json.JSONDecodeError, TypeError):
                                 tool_args = {"input": str(tool_args)}
 
+                        # ── DEDUP: Skip if this exact tool+args was already called ──
+                        try:
+                            call_key = (tool_name, json.dumps(tool_args, sort_keys=True, default=str))
+                        except (TypeError, ValueError):
+                            call_key = (tool_name, str(tool_args))
+
+                        if call_key in tool_calls_made:
+                            logger.warning(f"Skipping duplicate tool call: {tool_name}({tool_args})")
+                            dup_msg = f"[System: You already called `{tool_name}` with these exact arguments. Try a different approach or provide your final answer now.]"
+                            yield {
+                                "type": "tool_result",
+                                "name": tool_name,
+                                "output": dup_msg,
+                            }
+                            messages.append(ToolMessage(
+                                content=dup_msg,
+                                name=tool_name,
+                                tool_call_id=tool_id,
+                            ))
+                            continue
+                        tool_calls_made.add(call_key)
+
                         yield {
                             "type": "tool_start",
                             "name": tool_name,
@@ -809,32 +831,23 @@ class AgentService:
                     continue
 
                 # ── Evaluate Nudges ONLY if no tools were called ──
-                content_lower = full_content.lower()
-                has_explored = bool(tools_used & EXPLORATION_TOOLS)
+                # Softened: only nudge once, only on early iterations, only for very short answers.
+                # This prevents forcing unnecessary tool calls when the agent already has a valid answer.
                 has_used_any_tool = bool(tools_used)
 
-                # Only nudge if agent used NO tools at all AND gave a suspiciously short answer
-                is_premature_stop = (
+                should_nudge = (
                     not has_used_any_tool and
-                    not has_explored and 
-                    nudge_count < MAX_NUDGES and 
-                    iteration_count < self.MAX_ITERATIONS - 1
-                    and len(full_content.strip()) < 300
-                )
-                
-                # Are they promising to do something but outputting raw text instead of a tool call?
-                promises_action = (
-                    any(phrase in content_lower for phrase in [
-                        "let me read", "i will read", "let me search", 
-                        "i will search", "let me check", "i'll run", "let me find", "i will find"
-                    ]) and nudge_count < MAX_NUDGES
+                    nudge_count < 1 and
+                    iteration_count <= 2 and
+                    len(full_content.strip()) < 100
                 )
 
-                if is_premature_stop or promises_action:
+                if should_nudge:
                     nudge_count += 1
                     nudge_msg = (
-                        "SYSTEM: You stated an intent to check/read something but did not actually output a tool call. "
-                        "You MUST output a valid JSON tool call right now. Do not write introductory text."
+                        "SYSTEM: You haven't explored the workspace yet. "
+                        "If you need to inspect files, call a tool now. "
+                        "Otherwise, provide your final answer."
                     )
                     messages.append(HumanMessage(content=nudge_msg))
                     yield {"type": "status", "status": "nudging"}

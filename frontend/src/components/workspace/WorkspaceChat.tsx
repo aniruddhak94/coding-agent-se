@@ -84,6 +84,12 @@ export const WorkspaceChat: React.FC<WorkspaceChatProps> = ({
     const [provider, setProvider] = useState<AgentProvider>('qwen-cloud');
     const isStreamingRef = useRef(false);
     const abortControllerRef = useRef<AbortController | null>(null);
+    // Refs to track latest streaming values — avoids nested setState (which React Strict Mode re-executes)
+    const streamingContentRef = useRef('');
+    const streamingToolsRef = useRef<ToolCallCard[]>([]);
+    // Always call the latest onFileChanged callback, even mid-stream
+    const onFileChangedRef = useRef(onFileChanged);
+    onFileChangedRef.current = onFileChanged;
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -108,23 +114,27 @@ export const WorkspaceChat: React.FC<WorkspaceChatProps> = ({
     const handleStop = useCallback(() => {
         abortControllerRef.current?.abort();
         abortControllerRef.current = null;
-        // Finalize the streaming message
-        if (streamingContent || streamingTools.length > 0) {
+        // Finalize the streaming message using refs
+        const content = streamingContentRef.current;
+        const tools = streamingToolsRef.current;
+        if (content || tools.length > 0) {
             setMessages((prev) => [
                 ...prev,
                 {
                     role: 'agent',
-                    content: streamingContent || '(Generation stopped)',
-                    toolCalls: streamingTools.length > 0 ? streamingTools : undefined,
+                    content: content || '(Generation stopped)',
+                    toolCalls: tools.length > 0 ? tools : undefined,
                 },
             ]);
         }
         setStreamingContent('');
+        streamingContentRef.current = '';
         setStreamingTools([]);
+        streamingToolsRef.current = [];
         setStreamingModel('');
         setIsStreaming(false);
         isStreamingRef.current = false;
-    }, [streamingContent, streamingTools]);
+    }, []);
 
     const handleSend = useCallback(async () => {
         const prompt = input.trim();
@@ -135,7 +145,9 @@ export const WorkspaceChat: React.FC<WorkspaceChatProps> = ({
         setIsStreaming(true);
         isStreamingRef.current = true;
         setStreamingContent('');
+        streamingContentRef.current = '';
         setStreamingTools([]);
+        streamingToolsRef.current = [];
         setStreamingModel('');
 
         const controller = apiClient.agentStream(
@@ -153,99 +165,102 @@ export const WorkspaceChat: React.FC<WorkspaceChatProps> = ({
                         break;
 
                     case 'token':
-                        setStreamingContent((prev) => prev + event.content);
+                        streamingContentRef.current += event.content;
+                        setStreamingContent(streamingContentRef.current);
                         break;
 
-                    case 'tool_start':
-                        setStreamingTools((prev) => [
-                            ...prev,
-                            { name: event.name, args: event.args, status: 'running' },
-                        ]);
+                    case 'tool_start': {
+                        const newTool: ToolCallCard = { name: event.name, args: event.args, status: 'running' };
+                        streamingToolsRef.current = [...streamingToolsRef.current, newTool];
+                        setStreamingTools(streamingToolsRef.current);
                         break;
+                    }
 
-                    case 'tool_result':
-                        setStreamingTools((prev) =>
-                            prev.map((tool) =>
-                                tool.name === event.name && tool.status === 'running'
-                                    ? { ...tool, status: 'done' as const, output: event.output }
-                                    : tool
-                            )
+                    case 'tool_result': {
+                        streamingToolsRef.current = streamingToolsRef.current.map((tool) =>
+                            tool.name === event.name && tool.status === 'running'
+                                ? { ...tool, status: 'done' as const, output: event.output }
+                                : tool
                         );
+                        setStreamingTools(streamingToolsRef.current);
                         break;
+                    }
 
-                    case 'done':
+                    case 'done': {
                         // Finalize: move streaming content to messages
-                        setStreamingContent((currentContent) => {
-                            setStreamingTools((currentTools) => {
-                                setMessages((prev) => [
-                                    ...prev,
-                                    {
-                                        role: 'agent',
-                                        content: currentContent || 'Agent completed.',
-                                        modelUsed: event.model_used,
-                                        tokensApprox: event.context_tokens_approx,
-                                        toolCalls:
-                                            currentTools.length > 0 ? currentTools : undefined,
-                                    },
-                                ]);
-                                return [];
-                            });
+                        // Read from REFS (not nested setState) to avoid React Strict Mode re-execution
+                        const finalContent = streamingContentRef.current;
+                        const finalTools = streamingToolsRef.current;
 
-                            // Re-fetch files that were edited/created
-                            if (event.actions && event.actions.length > 0) {
-                                const changedPaths = event.actions
-                                    .filter((a: any) => ['file_edit', 'file_create', 'file_delete'].includes(a.type))
-                                    .map((a: any) => {
-                                        if (typeof a.path === 'string') {
-                                            // Normalize the path so it matches our internal openFiles keys
-                                            let cleaned = a.path;
-                                            // Handle absolute paths inside container
-                                            if (cleaned.startsWith('/workspace/')) cleaned = cleaned.replace('/workspace/', '');
-                                            // Handle relative prefixes
-                                            if (cleaned.startsWith('./')) cleaned = cleaned.substring(2);
-                                            if (cleaned.startsWith('/')) cleaned = cleaned.substring(1);
-                                            return cleaned;
-                                        }
-                                        return null;
-                                    })
-                                    .filter((p: any) => typeof p === 'string' && p.length > 0);
+                        setMessages((prev) => [
+                            ...prev,
+                            {
+                                role: 'agent',
+                                content: finalContent || 'Agent completed.',
+                                modelUsed: event.model_used,
+                                tokensApprox: event.context_tokens_approx,
+                                toolCalls:
+                                    finalTools.length > 0 ? finalTools : undefined,
+                            },
+                        ]);
 
-                                if (changedPaths.length > 0 && onFileChanged) {
-                                    onFileChanged(changedPaths);
-                                }
+                        // Reset streaming state
+                        setStreamingContent('');
+                        streamingContentRef.current = '';
+                        setStreamingTools([]);
+                        streamingToolsRef.current = [];
+                        setStreamingModel('');
+                        setIsStreaming(false);
+                        isStreamingRef.current = false;
+                        abortControllerRef.current = null;
+
+                        // Re-fetch files that were edited/created
+                        if (event.actions && event.actions.length > 0) {
+                            const changedPaths = event.actions
+                                .filter((a: any) => ['file_edit', 'file_create', 'file_delete'].includes(a.type))
+                                .map((a: any) => {
+                                    if (typeof a.path === 'string') {
+                                        let cleaned = a.path;
+                                        if (cleaned.startsWith('/workspace/')) cleaned = cleaned.replace('/workspace/', '');
+                                        if (cleaned.startsWith('./')) cleaned = cleaned.substring(2);
+                                        if (cleaned.startsWith('/')) cleaned = cleaned.substring(1);
+                                        return cleaned;
+                                    }
+                                    return null;
+                                })
+                                .filter((p: any) => typeof p === 'string' && p.length > 0);
+
+                            if (changedPaths.length > 0 && onFileChangedRef.current) {
+                                onFileChangedRef.current(changedPaths);
                             }
+                        }
+                        break;
+                    }
 
-                            return '';
-                        });
+                    case 'error': {
+                        const errContent = streamingContentRef.current;
+                        const errTools = streamingToolsRef.current;
+
+                        setMessages((prev) => [
+                            ...prev,
+                            {
+                                role: 'agent',
+                                content: errContent || `⚠️ ${event.message}`,
+                                toolCalls:
+                                    errTools.length > 0 ? errTools : undefined,
+                            },
+                        ]);
+
+                        setStreamingContent('');
+                        streamingContentRef.current = '';
+                        setStreamingTools([]);
+                        streamingToolsRef.current = [];
                         setStreamingModel('');
                         setIsStreaming(false);
                         isStreamingRef.current = false;
                         abortControllerRef.current = null;
                         break;
-
-                    case 'error':
-                        setStreamingContent((currentContent) => {
-                            setStreamingTools((currentTools) => {
-                                setMessages((prev) => [
-                                    ...prev,
-                                    {
-                                        role: 'agent',
-                                        content:
-                                            currentContent ||
-                                            `⚠️ ${event.message}`,
-                                        toolCalls:
-                                            currentTools.length > 0 ? currentTools : undefined,
-                                    },
-                                ]);
-                                return [];
-                            });
-                            return '';
-                        });
-                        setStreamingModel('');
-                        setIsStreaming(false);
-                        isStreamingRef.current = false;
-                        abortControllerRef.current = null;
-                        break;
+                    }
                 }
             },
             // onError
@@ -271,7 +286,7 @@ export const WorkspaceChat: React.FC<WorkspaceChatProps> = ({
         );
 
         abortControllerRef.current = controller;
-    }, [input, isStreaming, workspaceId, contextFilePaths, provider, onFileChanged]);
+    }, [input, isStreaming, workspaceId, contextFilePaths, provider]);
 
 
     return (
@@ -362,11 +377,10 @@ export const WorkspaceChat: React.FC<WorkspaceChatProps> = ({
                         </div>
 
                         <div
-                            className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm ${
-                                message.role === 'user'
+                            className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm ${message.role === 'user'
                                     ? 'bg-[#2EFF7B] text-[#0B0F0E] rounded-br-md'
                                     : 'bg-[#111917] border border-[#1F2D28] text-[#E6F1EC] rounded-bl-md'
-                            }`}
+                                }`}
                         >
                             {/* Tool call cards */}
                             {message.toolCalls && message.toolCalls.length > 0 && (
